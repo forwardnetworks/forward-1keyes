@@ -1,0 +1,84 @@
+# A small containerlab network for trying forward-1keyes end to end.
+#
+#   branch LAN 10.20.1.0/24  --  den-rtr  --  dc-rtr  --  DC LAN 10.30.1.0/24
+#                                                |
+#                                        outside 23.140.72.0/24  --  isp
+#
+# The ThousandEyes enterprise agent sits on the branch LAN, so its address is in a
+# modelled subnet. The web host in the data centre is the test target.
+#
+# The router configs are merged onto containerlab's IOL defaults (.partial.cfg).
+# The agent token is read from the environment, never written here:
+#   set -a; . ~/.config/forward-1keyes/env; set +a; sudo -E containerlab deploy -t lab/forward-1keyes.clab.yml
+name: forward-1keyes
+
+# A management subnet of its own: containerlab's default 172.20.20.0/24 overlaps
+# networks other projects have on this host.
+mgmt:
+  network: forward-1keyes-mgmt
+  ipv4-subnet: 172.28.28.0/24
+
+topology:
+  nodes:
+    den-rtr:
+      kind: cisco_iol
+      mgmt-ipv4: 172.28.28.11
+      image: vrnetlab/cisco_iol:17.18.02-fwd
+      startup-config: configs/den-rtr.partial.cfg
+    dc-rtr:
+      kind: cisco_iol
+      mgmt-ipv4: 172.28.28.12
+      image: vrnetlab/cisco_iol:17.18.02-fwd
+      startup-config: configs/dc-rtr.partial.cfg
+    isp:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - ip addr add 23.140.72.1/24 dev eth1
+        - ip route add 10.0.0.0/8 via 23.140.72.2
+    den-host:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - ip addr add 10.20.2.20/24 dev eth1
+        - ip route replace default via 10.20.2.1 dev eth1
+    dc-web:
+      kind: linux
+      image: alpine:latest
+      binds:
+        - web/respond.sh:/respond.sh:ro
+      exec:
+        - ip addr add 10.30.1.10/24 dev eth1
+        - ip route replace default via 10.30.1.1 dev eth1
+        # Real listeners: HTTP on 80, plain TCP on 443, and 8080, which dc-rtr's ACL blocks.
+        - sh -c 'nc -lk -p 80 -e /bin/sh /respond.sh >/dev/null 2>&1 &'
+        - sh -c 'nc -lk -p 443 -e /bin/sh /respond.sh >/dev/null 2>&1 &'
+        - sh -c 'nc -lk -p 8080 -e /bin/sh /respond.sh >/dev/null 2>&1 &'
+    te-agent:
+      kind: linux
+      image: thousandeyes/enterprise-agent:latest
+      cmd: /sbin/my_init
+      binds:
+        - ${HOME}/.local/share/forward-1keyes/agent/te-agent:/var/lib/te-agent
+        - ${HOME}/.local/share/forward-1keyes/agent/log:/var/log/agent
+      env:
+        TEAGENT_ACCOUNT_TOKEN: ${TE_AGENT_TOKEN}
+        TEAGENT_INET: "4"
+      cap-add: [NET_ADMIN, SYS_ADMIN]
+      exec:
+        - ip addr add 10.20.1.10/24 dev eth1
+        - ip route add 10.30.0.0/16 via 10.20.1.1 dev eth1
+
+  # Every link is 1500: with the default 9500 the agent's path probes wedged the router's
+  # link to the agent.
+  links:
+    - endpoints: ["te-agent:eth1", "den-rtr:eth1"]
+      mtu: 1500
+    - endpoints: ["den-host:eth1", "den-rtr:eth2"]
+      mtu: 1500
+    - endpoints: ["den-rtr:eth3", "dc-rtr:eth1"]
+      mtu: 1500
+    - endpoints: ["dc-web:eth1", "dc-rtr:eth2"]
+      mtu: 1500
+    - endpoints: ["dc-rtr:eth3", "isp:eth1"]
+      mtu: 1500

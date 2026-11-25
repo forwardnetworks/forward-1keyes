@@ -10,6 +10,14 @@ its digest.
 Status: a prototype. Agent-to-server (ICMP, TCP, HTTP) and agent-to-agent tests are mapped.
 Tests from ThousandEyes cloud agents are reported but not turned into checks yet.
 
+## Guide
+
+The [guide](guide/README.md) has screenshots from a real lab network, an
+[operations runbook](guide/runbook.md), a [lab runbook](guide/lab-runbook.md) and
+[use cases](guide/use-cases.md) in both directions.
+
+![ThousandEyes tests as Forward intent checks](guide/images/forward-intent-checks.png)
+
 ## Build
 
     go build -o forward-1keyes ./src/cmd/forward-1keyes
