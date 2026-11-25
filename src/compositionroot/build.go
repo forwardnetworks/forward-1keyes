@@ -29,7 +29,7 @@ func DefaultBuild(cfg Config) (Deps, error) { return BuildWith(cfg, BuildOptions
 func BuildWith(cfg Config, opts BuildOptions) (Deps, error) {
 	mode := ModeForwardRead
 	switch cfg.Verb {
-	case "plan", "status":
+	case "plan", "status", "report":
 	case "apply":
 		mode = ModeForwardApply
 	default:

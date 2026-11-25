@@ -30,6 +30,10 @@ After apply, `status` lists the managed checks and a second `plan` has nothing t
 
 Account and test identifiers in the images are replaced with placeholders.
 
+`report` puts what was measured beside what was modelled:
+
+![report](images/cli-report.png)
+
 ## Proof from a real network
 
 From the [lab](lab-runbook.md): the same flows, measured by a ThousandEyes agent sending real

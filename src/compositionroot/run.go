@@ -80,9 +80,13 @@ func (e usageError) Error() string { return e.msg }
 type options struct {
 	group, network, out, resolver, planFile, digest, results, snapshot string
 	maxFlows, batchSize                                                int
-	nonPersistent, asJSON, debug, debugBodies                          bool
-	testIDs, includeLabels, excludeLabels, includeNames, excludeNames  []string
-	ignoreAgentSubnets                                                 []string
+	window                                                             time.Duration
+	// Each verb's defaults are written here when its flags are registered, so
+	// a flag whose default differs between verbs needs its own field.
+	reportOut                                                         string
+	nonPersistent, asJSON, debug, debugBodies                         bool
+	testIDs, includeLabels, excludeLabels, includeNames, excludeNames []string
+	ignoreAgentSubnets                                                []string
 }
 
 func addFlags(verb string, fs *pflag.FlagSet, o *options) {
@@ -90,21 +94,32 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.BoolVar(&o.debug, "debug", false, "log method, path, status and duration of each call")
 		fs.BoolVar(&o.debugBodies, "debug-bodies", false, "also log request and response bodies, redacted")
 	}
-	switch verb {
-	case "plan":
-		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
-		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
-		fs.StringVar(&o.out, "out", defaultPlanFile, "where to write the plan file")
-		fs.BoolVar(&o.asJSON, "json", false, "print the plan file instead of a table")
+	selection := func() {
 		fs.StringVar(&o.resolver, "resolver", "", "DNS server as ip:port (default: the system resolver)")
-		fs.IntVar(&o.maxFlows, "max-flows", 500, "flow cap")
-		fs.BoolVar(&o.nonPersistent, "non-persistent", false, "plan non-persistent checks (this snapshot only)")
 		fs.StringArrayVar(&o.testIDs, "test-id", nil, "select only this test ID (repeatable)")
 		fs.StringArrayVar(&o.includeLabels, "include-label", nil, "select only tests with this label (repeatable)")
 		fs.StringArrayVar(&o.excludeLabels, "exclude-label", nil, "skip tests with this label (repeatable)")
 		fs.StringArrayVar(&o.includeNames, "include-name", nil, "select only tests whose name matches this regexp (repeatable)")
 		fs.StringArrayVar(&o.excludeNames, "exclude-name", nil, "skip tests whose name matches this regexp (repeatable)")
 		fs.StringArrayVar(&o.ignoreAgentSubnets, "ignore-agent-subnet", nil, "ignore agent addresses in this CIDR, for example a management subnet (repeatable)")
+	}
+	switch verb {
+	case "report":
+		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
+		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
+		fs.DurationVar(&o.window, "window", time.Hour, "how far back to read measurements")
+		fs.StringVar(&o.reportOut, "out", "", "also write the report to this file as JSON")
+		fs.BoolVar(&o.asJSON, "json", false, "print JSON instead of a table")
+		selection()
+		debug()
+	case "plan":
+		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
+		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
+		fs.StringVar(&o.out, "out", defaultPlanFile, "where to write the plan file")
+		fs.BoolVar(&o.asJSON, "json", false, "print the plan file instead of a table")
+		fs.IntVar(&o.maxFlows, "max-flows", 500, "flow cap")
+		fs.BoolVar(&o.nonPersistent, "non-persistent", false, "plan non-persistent checks (this snapshot only)")
+		selection()
 		debug()
 	case "apply":
 		fs.StringVar(&o.planFile, "plan", "", "the plan file (required)")
@@ -132,6 +147,7 @@ func FlagNames(verb string) []string {
 }
 
 var verbHelp = map[string]string{
+	"report": "compare what ThousandEyes measured with what Forward concluded; reads only",
 	"plan":   "read ThousandEyes and Forward and write a plan; changes nothing",
 	"apply":  "write an approved plan to Forward, after checking its digest and the world",
 	"status": "list the checks this tool manages and flag bad tuples; reads only Forward",
@@ -146,7 +162,7 @@ func (r Runner) command(code *int) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(*cobra.Command, []string) error {
-			return usageError{"a verb is required: plan, apply or status"}
+			return usageError{"a verb is required: plan, apply, status or report"}
 		},
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -154,7 +170,7 @@ func (r Runner) command(code *int) *cobra.Command {
 	root.SetErr(r.IO.Err)
 	root.SetFlagErrorFunc(flagErr)
 	var o options
-	for _, verb := range []string{"plan", "apply", "status"} {
+	for _, verb := range []string{"plan", "apply", "status", "report"} {
 		verb := verb
 		sub := &cobra.Command{
 			Use:   verb,
@@ -185,7 +201,7 @@ func (r Runner) Run(args []string) int {
 	if err := root.Execute(); err != nil {
 		var u usageError
 		if errors.As(err, &u) {
-			fmt.Fprintf(r.IO.Err, "usage error: %s\nusage: forward-1keyes plan|apply|status [flags]  (--help lists the flags)\n", u.msg)
+			fmt.Fprintf(r.IO.Err, "usage error: %s\nusage: forward-1keyes plan|apply|status|report [flags]  (--help lists the flags)\n", u.msg)
 		} else {
 			fmt.Fprintf(r.IO.Err, "error: %v\n", err)
 		}
@@ -206,6 +222,11 @@ func (r Runner) exec(verb string, o options) (int, error) {
 			return 0, usageError{"apply needs --plan and --digest"}
 		}
 		return r.apply(o)
+	case "report":
+		if o.group == "" || o.network == "" {
+			return 0, usageError{"report needs --te-account-group and --network"}
+		}
+		return r.report(o)
 	default:
 		if o.network == "" {
 			return 0, usageError{"status needs --network"}
@@ -245,13 +266,9 @@ func (r Runner) now() time.Time {
 
 func (r Runner) plan(o options) (int, error) {
 	// Checked before anything is built or read.
-	var ignored []netip.Prefix
-	for _, v := range o.ignoreAgentSubnets {
-		p, err := netip.ParsePrefix(v)
-		if err != nil {
-			return 0, fmt.Errorf("--ignore-agent-subnet %q is not a CIDR prefix such as 172.28.28.0/24", v)
-		}
-		ignored = append(ignored, p)
+	ignored, err := ignoredSubnets(o)
+	if err != nil {
+		return 0, err
 	}
 	cfg, err := r.config("plan", true, o)
 	if err != nil {
@@ -287,6 +304,85 @@ func (r Runner) plan(o options) (int, error) {
 	}
 	printPlan(r.IO.Out, body, o.out, digest)
 	return body.ExitCode(), nil
+}
+
+// ignoredSubnets reads the --ignore-agent-subnet values.
+func ignoredSubnets(o options) ([]netip.Prefix, error) {
+	var ignored []netip.Prefix
+	for _, v := range o.ignoreAgentSubnets {
+		p, err := netip.ParsePrefix(v)
+		if err != nil {
+			return nil, fmt.Errorf("--ignore-agent-subnet %q is not a CIDR prefix such as 172.28.28.0/24", v)
+		}
+		ignored = append(ignored, p)
+	}
+	return ignored, nil
+}
+
+func (r Runner) report(o options) (int, error) {
+	ignored, err := ignoredSubnets(o)
+	if err != nil {
+		return 0, err
+	}
+	if o.window < time.Second {
+		return 0, usageError{"--window must be at least one second"}
+	}
+	cfg, err := r.config("report", true, o)
+	if err != nil {
+		return 0, err
+	}
+	deps, err := r.Build(cfg)
+	if err != nil {
+		return 0, err
+	}
+	rep, err := usecases.Report(context.Background(), usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, usecases.ReportParams{
+		Window: o.window,
+		Plan: usecases.PlanParams{
+			AccountGroup: o.group, NetworkName: o.network, MaxFlows: 500, Persistent: true,
+			UpdateStrategy: "U1", ToolVersion: ToolVersion, ResolverSetting: cfg.ResolverSetting, IgnoreAgentSubnets: ignored,
+			Selection: domain.Selection{TestIDs: o.testIDs, IncludeLabels: o.includeLabels, ExcludeLabels: o.excludeLabels, IncludeNames: o.includeNames, ExcludeNames: o.excludeNames},
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	raw, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return 0, err
+	}
+	if o.reportOut != "" {
+		if err := r.FS.WriteFile(o.reportOut, append(raw, '\n')); err != nil {
+			return 0, fmt.Errorf("writing the report: %w", err)
+		}
+	}
+	if o.asJSON {
+		fmt.Fprintln(r.IO.Out, string(raw))
+	} else {
+		printReport(r.IO.Out, rep)
+	}
+	return rep.ExitCode(), nil
+}
+
+func printReport(w io.Writer, rep domain.Report) {
+	fmt.Fprintf(w, "report on snapshot %s: measured by ThousandEyes beside modelled by Forward\n", rep.SnapshotID)
+	for _, row := range rep.Rows {
+		if !row.Compared {
+			fmt.Fprintf(w, "\nnot compared  %s\n    %s\n", row.Name, row.Reason)
+			continue
+		}
+		note := ""
+		if row.DiffersFromPlan {
+			note = "  (the check differs from what plan would write)"
+		}
+		fmt.Fprintf(w, "\n%s  %s%s\n    measured %s, Forward %s (snapshot processed %s)\n", row.Verdict, row.Name, note, row.Measured, row.ForwardStatus, row.SnapshotProcessedAt)
+		for _, m := range row.Records {
+			fmt.Fprintf(w, "      %s  %s  agent %s, test %s, to %s\n", m.MeasuredAt.Format(time.RFC3339), m.Reading, m.AgentID, m.TestID, m.ServerIP)
+		}
+		if row.OlderThanSnapshot {
+			fmt.Fprintln(w, "    a measurement is older than the snapshot: the network may have changed between them")
+		}
+		fmt.Fprintf(w, "    look first: %s\n", row.Guidance)
+	}
 }
 
 func printPlan(w io.Writer, b domain.PlanBody, out, digest string) {

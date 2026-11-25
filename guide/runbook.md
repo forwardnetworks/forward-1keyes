@@ -55,6 +55,42 @@ Keep them in a file with mode 600 outside the repository, and load it with
 5. **Read the results** in Forward under Verify, Intent. Managed checks are named
    `1keyes: <test name> [<test id>] <source> #<key>`.
 
+## Compare what was measured with what is modelled
+
+    forward-1keyes report --network "<Forward network>" --te-account-group "<account group>"
+
+`report` only reads. It takes the same selection, `--resolver` and `--ignore-agent-subnet` flags as
+`plan`, plus `--window` (how far back to read measurements, default `1h`), `--json` and
+`--out FILE`.
+
+![report from the lab](images/cli-report.png)
+
+For each check it takes the latest network result per test, agent and destination. A result with
+an error, or 100% loss, is failing; 0% loss is working; anything between is degraded. A result with
+neither is unknown, never working.
+
+| Verdict | Look first at |
+| :--- | :--- |
+| healthy | nothing to do |
+| both-blocked | the path in Forward |
+| network-allows | the destination service, the circuit, live device state, or an old snapshot |
+| model-disagrees | the check's source address, then collect the network again |
+| inconclusive | the records: no data, disagreeing agents, **any** partial loss, no pass or fail in Forward, or an outdated result |
+
+- **Any loss at all makes a check inconclusive**, even 2%. In the lab, one five-minute round showed
+  2% and 6% loss while the machine running it was busy, and the next round was clean.
+- Each row shows when it was measured and when the snapshot was processed, and says when a
+  measurement is older than the snapshot.
+- ThousandEyes results do not say which source address an agent used. An agent with several
+  modelled addresses has one check per address, all judged against the same measurement. Use
+  `--ignore-agent-subnet`.
+- Agent-to-agent checks are listed but not compared yet. Stale checks and tests without a check are
+  listed with the reason.
+
+Exit status: **0** only when something was compared and every compared check is healthy; **2** for
+any other result, including nothing to compare; **1** on an error. A result that cannot be read or
+decoded is an error, never "no data".
+
 ## Removing or backing out
 
 The tool never deletes or deactivates a check, and its HTTP client refuses DELETE. To remove

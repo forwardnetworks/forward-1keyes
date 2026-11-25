@@ -15,19 +15,20 @@ Each agent-to-server, HTTP server or agent-to-agent test becomes one Forward che
 prefix and destination address. Forward re-evaluates it on every snapshot. Result: what you
 already monitor becomes what the network must keep allowing.
 
-### 2. Two-sided triage — Shown by hand, proposed as a report
+### 2. Two-sided triage — Built
 
-Put each test's ThousandEyes result next to its check's status:
+`report` puts each check's latest ThousandEyes measurement next to its status in Forward:
 
-| ThousandEyes | Forward | What it suggests |
-| :--- | :--- | :--- |
-| working | PASS | healthy |
-| failing | FAIL | the network configuration or routing does not allow it; start with the model's path |
-| failing | PASS | the model allows it: look at the host, service, circuit or live device state, or a stale snapshot |
-| working | FAIL | the model disagrees with reality: wrong source address, uncollected device or stale snapshot |
+| ThousandEyes | Forward | Verdict | What it suggests |
+| :--- | :--- | :--- | :--- |
+| working | PASS | healthy | nothing to do |
+| failing | FAIL | both-blocked | the model does not allow it either; start with the path in Forward |
+| failing | PASS | network-allows | the model allows it: look at the service, circuit, live device state or an old snapshot |
+| working | FAIL | model-disagrees | check the source address, then collect the network again |
 
-The lab showed the first two rows on real traffic. A `report` command could read test results
-and check statuses and print this table. It would only read.
+Anything else is inconclusive. It only reads. Agent-to-agent checks are not compared yet. In the
+lab it showed healthy and both-blocked on real traffic; see the
+[runbook](runbook.md#compare-what-was-measured-with-what-is-modelled).
 
 ### 3. Change assurance — Proposed (not tested with these checks)
 
@@ -92,7 +93,7 @@ been tried. A comparison would flag where the measured path leaves the modelled 
 
 ## Suggested order
 
-1. Triage report (2): reads only, and is the clearest value.
-2. Snapshot re-plan and check-flip notices (5, 6): reads only.
-3. Alert enrichment receiver (4): needs a reachable endpoint and an authentication decision.
-4. Test creation (7): first feature that writes to ThousandEyes.
+1. Snapshot re-plan and check-flip notices (5, 6): reads only.
+2. Alert enrichment receiver (4): needs a reachable endpoint and an authentication decision. It can
+   answer with the verdict that `report` computes.
+3. Test creation (7): first feature that writes to ThousandEyes.
