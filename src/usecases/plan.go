@@ -120,7 +120,7 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 	for _, pc := range domain.BuildPlannedChecks(flows) {
 		spec, err := domain.BuildCheck(pc, group.AID, nameLimit)
 		if err != nil {
-			rows = append(rows, notImportableRow(pc.Contributors[0].TestName, "cannot build the check", buildFailure(err)))
+			rows = append(rows, notImportableRow(pc.Contributors[0].TestName, "cannot build the check", buildFailure(err, internetReason(ctx, deps.Forward, networkID))))
 			continue
 		}
 		specs[pc.SourceKey] = spec
@@ -235,7 +235,7 @@ func resolveHostnames(ctx context.Context, r ports.Resolver, tests []domain.Test
 }
 
 // locateFlow places one candidate in the Forward model: where it starts, and
-// the one destination address it ends at. A reason comes back when it cannot.
+// the destination addresses it ends at (one check each). A reason comes back when it cannot.
 func locateFlow(inv domain.Inventory, agents map[string]domain.AgentInfo, t domain.TestConfig, c domain.Candidate) (domain.Flow, string) {
 	src, why := agentSource(inv, agents, c.AgentID)
 	if why != "" {
@@ -247,11 +247,8 @@ func locateFlow(inv domain.Inventory, agents map[string]domain.AgentInfo, t doma
 			dests = append(dests, netip.PrefixFrom(a, a.BitLen()))
 		}
 	}
-	switch {
-	case len(dests) == 0:
+	if len(dests) == 0 {
 		return domain.Flow{}, "the destination is outside the modelled network"
-	case len(dests) > 1:
-		return domain.Flow{}, fmt.Sprintf("the destination has %d addresses in the model; one check per address is not supported yet", len(dests))
 	}
 	return domain.Flow{TestID: t.ID, TestName: t.Name, Direction: "to-target", AgentID: c.AgentID,
 		Source: src, DestPrefixes: dests, Protocol: c.Protocol, Port: c.Port}, ""
@@ -273,7 +270,21 @@ func agentSource(inv domain.Inventory, agents map[string]domain.AgentInfo, id st
 	case domain.Located:
 		return domain.Source{Prefixes: sourcePrefixes(loc.Location, agent.Addresses)}, ""
 	case domain.Ambiguous:
-		return domain.Source{}, fmt.Sprintf("agent %s maps to more than one location", id)
+		// Several prefixes are several checks. Subnets that share one prefix in
+		// different VRFs cannot be told apart by a prefix filter.
+		var prefixes []netip.Prefix
+		for _, c := range loc.Candidates {
+			if c.Kind != domain.SubnetLocation {
+				return domain.Source{}, fmt.Sprintf("agent %s maps to more than one location", id)
+			}
+			if !slices.Contains(prefixes, c.Prefix) {
+				prefixes = append(prefixes, c.Prefix)
+			}
+		}
+		if len(prefixes) < 2 {
+			return domain.Source{}, fmt.Sprintf("agent %s maps to more than one location", id)
+		}
+		return domain.Source{Prefixes: prefixes}, ""
 	}
 	return domain.Source{}, fmt.Sprintf("agent %s is not in the modelled network", id)
 }
@@ -341,12 +352,25 @@ func sourcePrefixes(loc domain.Location, addrs []netip.Addr) []netip.Prefix {
 	return out
 }
 
-func buildFailure(err error) string {
-	switch err {
-	case domain.ErrNoInternetEdge:
-		return "no internet-edge source form is known yet"
-	case domain.ErrMultiplePrefixes:
-		return "several prefixes in one location: one check per prefix is not supported yet"
+// internetReason says why a flow from the internet cannot be a check: when the
+// Forward reader can say that the network's internet node has no connection,
+// that is the reason; otherwise the check form is not known yet.
+func internetReason(ctx context.Context, fwd ports.ForwardReader, networkID string) string {
+	const unknown = "no internet-edge source form is known yet"
+	r, ok := fwd.(ports.InternetNodeReader)
+	if !ok {
+		return unknown
+	}
+	n, err := r.InternetConnections(ctx, networkID)
+	if err != nil || n > 0 {
+		return unknown
+	}
+	return "the network's internet node has no connection to the model"
+}
+
+func buildFailure(err error, internet string) string {
+	if err == domain.ErrNoInternetEdge {
+		return internet
 	}
 	return err.Error()
 }

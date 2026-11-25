@@ -103,6 +103,45 @@ type candidate struct {
 	agents   []string
 }
 
+// splitFlow is a flow with one source prefix and one destination prefix. A
+// location filter in Forward takes one value, so a flow with several of either
+// is several flows. keyDest is set only when the destination had several
+// prefixes, so the key of every other flow is the one it always had.
+type splitFlow struct {
+	flow    Flow
+	keyDest string
+}
+
+func splitFlows(flows []Flow) []splitFlow {
+	var out []splitFlow
+	for _, f := range flows {
+		srcs := [][]netip.Prefix{nil}
+		if !f.Source.InternetEdge {
+			srcs = nil
+			for _, p := range sortedPrefixes(f.Source.Prefixes) {
+				srcs = append(srcs, []netip.Prefix{p})
+			}
+		}
+		dests := sortedPrefixes(f.DestPrefixes)
+		for _, s := range srcs {
+			for _, d := range dests {
+				one := f
+				one.Source = Source{InternetEdge: f.Source.InternetEdge, Prefixes: s}
+				one.DestPrefixes = []netip.Prefix{d}
+				sf := splitFlow{flow: one}
+				if len(dests) > 1 {
+					sf.keyDest = d.Addr().String()
+					if !d.IsSingleIP() {
+						sf.keyDest = d.String()
+					}
+				}
+				out = append(out, sf)
+			}
+		}
+	}
+	return out
+}
+
 // BuildPlannedChecks turns flows into desired checks. Agents of one test that
 // share a slot give one check; checks of different tests with the same
 // source, destination, protocol and port merge into one that keeps the
@@ -112,14 +151,15 @@ func BuildPlannedChecks(flows []Flow) []PlannedCheck {
 	// 1. one candidate per (test, slot, protocol, port, destination)
 	var cands []*candidate
 	index := map[string]*candidate{}
-	for _, f := range flows {
+	for _, one := range splitFlows(flows) {
+		f := one.flow
 		slot := Slot(f.Direction, f.Source)
 		dest := sortedPrefixes(f.DestPrefixes)
 		id := strings.Join([]string{f.TestID, slot, f.Protocol, portString(f.Port), joinPrefixes(dest, ",")}, "\x00")
 		c, ok := index[id]
 		if !ok {
 			c = &candidate{
-				key:  SourceKey(KeyInput{TestID: f.TestID, Slot: slot, Protocol: f.Protocol, Port: f.Port}),
+				key:  SourceKey(KeyInput{TestID: f.TestID, Slot: slot, Protocol: f.Protocol, Port: f.Port, Dest: one.keyDest}),
 				slot: slot, source: Source{InternetEdge: f.Source.InternetEdge, Prefixes: sortedPrefixes(f.Source.Prefixes)},
 				dest: dest, protocol: f.Protocol, port: f.Port, testID: f.TestID, testName: f.TestName,
 			}

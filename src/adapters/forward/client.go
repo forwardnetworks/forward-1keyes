@@ -33,8 +33,9 @@ type Client struct {
 }
 
 var (
-	_ ports.ForwardClient = (*Client)(nil)
-	_ ports.ForwardReader = (*Client)(nil)
+	_ ports.ForwardClient      = (*Client)(nil)
+	_ ports.InternetNodeReader = (*Client)(nil)
+	_ ports.ForwardReader      = (*Client)(nil)
 )
 
 const maxRedirects = 5
@@ -105,6 +106,19 @@ func (c *Client) CreateCheck(ctx context.Context, snapshotID string, spec ports.
 		return "", err
 	}
 	return string(detail.ID), nil
+}
+
+// InternetConnections says how many connections the network's internet node
+// has. A network with no configured node has none.
+func (c *Client) InternetConnections(ctx context.Context, networkID string) (int, error) {
+	node, _, err := c.sdk.SyntheticNodes.GetInternetNode(ctx, networkID)
+	if err != nil {
+		return 0, fmt.Errorf("forward adapter: reading the internet node of network %s: %w", networkID, err)
+	}
+	if node == nil {
+		return 0, nil
+	}
+	return len(node.Connections), nil
 }
 
 // GetCheck reads one check back.

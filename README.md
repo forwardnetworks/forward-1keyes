@@ -46,11 +46,13 @@ client.
 
 ## Limits found against a live Forward
 
-- A location filter takes one value, so a destination with several addresses needs one check each.
-  This is not built yet; such tests are reported.
+- A location filter takes one value, so a destination with several addresses, or an agent in
+  several prefixes, becomes one check per address and per prefix. Such a check's key carries the
+  destination address; every other key is unchanged.
 - Forward's model has connected subnets, not end hosts, so a destination is located by subnet.
 - "From the internet" needs the network's internet node to have a connection; its check form is
-  not verified.
+  not verified. A test from a cloud agent is reported as not importable, with the reason that the
+  network's internet node has no connection when that is the case.
 
 ## Tests
 

@@ -40,6 +40,13 @@ type Resolver interface {
 	Lookup(ctx context.Context, name string) ([]netip.Addr, error)
 }
 
+// InternetNodeReader is an optional read a Forward reader may also offer: how
+// many connections the network's internet synthetic node has. A reader that
+// does not offer it leaves the reason for a cloud-agent flow generic.
+type InternetNodeReader interface {
+	InternetConnections(ctx context.Context, networkID string) (int, error)
+}
+
 // ForwardReader is what plan reads from Forward. It has no write method.
 type ForwardReader interface {
 	// NetworkByName returns the ID of the network with exactly this name.

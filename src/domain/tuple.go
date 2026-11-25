@@ -29,21 +29,29 @@ type KeyInput struct {
 	Slot     string
 	Protocol string
 	Port     *int // nil for protocols without a port, such as ICMP
+	// Dest is the one destination address of a flow whose destination has
+	// several modelled addresses; empty for every other flow.
+	Dest string
 }
 
 // SourceKey returns "sha256:<64 lowercase hex>" over the canonical JSON of
-// {test_id, slot, protocol, port}.
+// {test_id, slot, protocol, port}, plus dest for a flow whose destination has
+// several addresses.
 func SourceKey(in KeyInput) string {
 	var port any
 	if in.Port != nil {
 		port = *in.Port
 	}
-	body, err := CanonicalJSON(map[string]any{
+	member := map[string]any{
 		"test_id":  in.TestID,
 		"slot":     in.Slot,
 		"protocol": in.Protocol,
 		"port":     port,
-	})
+	}
+	if in.Dest != "" {
+		member["dest"] = in.Dest
+	}
+	body, err := CanonicalJSON(member)
 	if err != nil {
 		// A map of strings, an int and nil always encodes.
 		panic("domain: source key: " + err.Error())
