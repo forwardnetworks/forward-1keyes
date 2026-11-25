@@ -24,7 +24,8 @@ Keep them in a file with mode 600 outside the repository, and load it with
        forward-1keyes plan --network "<Forward network>" --te-account-group "<account group>"
 
    Useful flags: `--test-id`, `--include-name`, `--exclude-name`, `--include-label`,
-   `--exclude-label`, `--max-flows` (default 500), `--resolver ip:port`, `--json`.
+   `--exclude-label`, `--ignore-agent-subnet CIDR`, `--max-flows` (default 500), `--resolver ip:port`,
+   `--json`.
    `forward-1keyes plan --help` lists them all.
 
 2. **Review the table.** For every row check the outcome, and the source prefix in the name.
@@ -79,8 +80,20 @@ bodies with secrets removed.
 
 ThousandEyes reports every address of an agent. If more than one of them is in the Forward model,
 for example a management address on a collected management network, each one gives a check. Look
-at the source prefix in the plan table before applying. There is no option to ignore a subnet
-yet.
+at the source prefix in the plan table before applying, and leave the unwanted subnet out:
+
+    forward-1keyes plan ... --ignore-agent-subnet 172.28.28.0/24
+
+The flag is repeatable. It removes **agent** addresses inside the prefix before the agent is
+located, wherever an agent is used: as a source, as an agent-to-agent target, or as the
+destination of a return test. It never filters a test's destination host. An agent left with no
+address is reported as not importable. The plan file records the prefixes, so the digest you
+approve covers them.
+
+Use the same flag on every later plan. Checks already applied from an ignored subnet are shown as
+`stale` and left in Forward; delete them in the Forward UI if you want them gone:
+
+![the same lab with the management subnet ignored](images/cli-ignore-subnet.png)
 
 ### Cloud agents
 

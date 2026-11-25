@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -81,6 +82,7 @@ type options struct {
 	maxFlows, batchSize                                                int
 	nonPersistent, asJSON, debug, debugBodies                          bool
 	testIDs, includeLabels, excludeLabels, includeNames, excludeNames  []string
+	ignoreAgentSubnets                                                 []string
 }
 
 func addFlags(verb string, fs *pflag.FlagSet, o *options) {
@@ -102,6 +104,7 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.StringArrayVar(&o.excludeLabels, "exclude-label", nil, "skip tests with this label (repeatable)")
 		fs.StringArrayVar(&o.includeNames, "include-name", nil, "select only tests whose name matches this regexp (repeatable)")
 		fs.StringArrayVar(&o.excludeNames, "exclude-name", nil, "skip tests whose name matches this regexp (repeatable)")
+		fs.StringArrayVar(&o.ignoreAgentSubnets, "ignore-agent-subnet", nil, "ignore agent addresses in this CIDR, for example a management subnet (repeatable)")
 		debug()
 	case "apply":
 		fs.StringVar(&o.planFile, "plan", "", "the plan file (required)")
@@ -241,6 +244,15 @@ func (r Runner) now() time.Time {
 }
 
 func (r Runner) plan(o options) (int, error) {
+	// Checked before anything is built or read.
+	var ignored []netip.Prefix
+	for _, v := range o.ignoreAgentSubnets {
+		p, err := netip.ParsePrefix(v)
+		if err != nil {
+			return 0, fmt.Errorf("--ignore-agent-subnet %q is not a CIDR prefix such as 172.28.28.0/24", v)
+		}
+		ignored = append(ignored, p)
+	}
 	cfg, err := r.config("plan", true, o)
 	if err != nil {
 		return 0, err
@@ -252,7 +264,8 @@ func (r Runner) plan(o options) (int, error) {
 	body, err := usecases.Plan(context.Background(), usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, usecases.PlanParams{
 		AccountGroup: o.group, NetworkName: o.network, MaxFlows: o.maxFlows, Persistent: !o.nonPersistent,
 		UpdateStrategy: "U1", ToolVersion: ToolVersion, ResolverSetting: cfg.ResolverSetting,
-		Selection: domain.Selection{TestIDs: o.testIDs, IncludeLabels: o.includeLabels, ExcludeLabels: o.excludeLabels, IncludeNames: o.includeNames, ExcludeNames: o.excludeNames},
+		IgnoreAgentSubnets: ignored,
+		Selection:          domain.Selection{TestIDs: o.testIDs, IncludeLabels: o.includeLabels, ExcludeLabels: o.excludeLabels, IncludeNames: o.includeNames, ExcludeNames: o.excludeNames},
 	})
 	if err != nil {
 		return 0, err

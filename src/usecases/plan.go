@@ -29,6 +29,9 @@ type PlanParams struct {
 	UpdateStrategy  string // "U1" or "U3", as found against a live Forward
 	ToolVersion     string
 	ResolverSetting string // "system" or "server:<ip:port>", recorded in the plan
+	// IgnoreAgentSubnets: an agent address inside one of these is not used to
+	// locate the agent. Test destinations are never filtered.
+	IgnoreAgentSubnets []netip.Prefix
 }
 
 const nameLimit = 255
@@ -62,6 +65,10 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 		agents[a.ID] = a
 	}
 
+	// Locating uses the filtered agents; the plan fingerprints the agents as
+	// ThousandEyes reports them, so apply compares like with like.
+	reachable, emptied := ignoreAgentAddresses(agents, p.IgnoreAgentSubnets)
+
 	pins, resolutions := resolveHostnames(ctx, deps.Resolver, selected)
 
 	networkID, err := deps.Forward.NetworkByName(ctx, p.NetworkName)
@@ -89,7 +96,7 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 			continue
 		}
 		if t.Type == "agent-to-agent" {
-			fs, why := agentToAgentFlows(inv, agents, t)
+			fs, why := agentToAgentFlows(inv, agents, reachable, emptied, t)
 			if why != "" {
 				rows = append(rows, notImportableRow(t.Name, "agent-to-agent", why))
 				continue
@@ -103,7 +110,7 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 			continue
 		}
 		for _, c := range res.Candidates {
-			f, why := locateFlow(inv, agents, t, c)
+			f, why := locateFlow(inv, reachable, emptied, t, c)
 			if why != "" {
 				rows = append(rows, notImportableRow(t.Name, "not located", why))
 				continue
@@ -169,6 +176,7 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 		Persistent: p.Persistent, UpdateStrategy: p.UpdateStrategy, MaxFlows: p.MaxFlows, Rows: rows,
 		Observed: observedForPlan(checks, instance, desired), Resolver: setting, Resolutions: resolutions,
 		Tests: observedTests(selected), Agents: observedAgents(agents, usedAgents),
+		IgnoredAgentSubnets: domain.CanonicalPrefixes(p.IgnoreAgentSubnets),
 	})
 }
 
@@ -236,8 +244,8 @@ func resolveHostnames(ctx context.Context, r ports.Resolver, tests []domain.Test
 
 // locateFlow places one candidate in the Forward model: where it starts, and
 // the destination addresses it ends at (one check each). A reason comes back when it cannot.
-func locateFlow(inv domain.Inventory, agents map[string]domain.AgentInfo, t domain.TestConfig, c domain.Candidate) (domain.Flow, string) {
-	src, why := agentSource(inv, agents, c.AgentID)
+func locateFlow(inv domain.Inventory, agents map[string]domain.AgentInfo, emptied map[string]bool, t domain.TestConfig, c domain.Candidate) (domain.Flow, string) {
+	src, why := agentSource(inv, agents, emptied, c.AgentID)
 	if why != "" {
 		return domain.Flow{}, why
 	}
@@ -257,13 +265,16 @@ func locateFlow(inv domain.Inventory, agents map[string]domain.AgentInfo, t doma
 // agentSource says where an agent starts a flow: the internet edge for a cloud
 // agent, or the one location its addresses give in the model. A reason comes
 // back when it has none or more than one.
-func agentSource(inv domain.Inventory, agents map[string]domain.AgentInfo, id string) (domain.Source, string) {
+func agentSource(inv domain.Inventory, agents map[string]domain.AgentInfo, emptied map[string]bool, id string) (domain.Source, string) {
 	agent, ok := agents[id]
 	if !ok {
 		return domain.Source{}, fmt.Sprintf("agent %s is not in the account group", id)
 	}
 	if agent.Kind == domain.AgentCloud {
 		return domain.Source{InternetEdge: true}, ""
+	}
+	if emptied[id] {
+		return domain.Source{}, allIgnoredReason(id)
 	}
 	loc := domain.Locate(inv, agent.Addresses)
 	switch loc.Status {
@@ -292,7 +303,7 @@ func agentSource(inv domain.Inventory, agents map[string]domain.AgentInfo, id st
 // agentToAgentFlows maps an agent-to-agent test. The target agent is located
 // like a source; a target that maps to no location, or to more than one, makes
 // the whole test not importable. Direction decides which end is the source.
-func agentToAgentFlows(inv domain.Inventory, agents map[string]domain.AgentInfo, t domain.TestConfig) ([]domain.Flow, string) {
+func agentToAgentFlows(inv domain.Inventory, reported, agents map[string]domain.AgentInfo, emptied map[string]bool, t domain.TestConfig) ([]domain.Flow, string) {
 	if (t.Protocol == "tcp" || t.Protocol == "udp") && t.Port == nil {
 		return nil, t.Protocol + " test has no port"
 	}
@@ -302,6 +313,9 @@ func agentToAgentFlows(inv domain.Inventory, agents map[string]domain.AgentInfo,
 	}
 	if target.Kind == domain.AgentCloud {
 		return nil, fmt.Sprintf("target agent %s is a cloud agent: it has no location in the model", t.Target)
+	}
+	if emptied[t.Target] {
+		return nil, "target " + allIgnoredReason(t.Target)
 	}
 	loc := domain.Locate(inv, target.Addresses)
 	switch loc.Status {
@@ -322,7 +336,7 @@ func agentToAgentFlows(inv domain.Inventory, agents map[string]domain.AgentInfo,
 	}
 	var flows []domain.Flow
 	for _, id := range t.AgentIDs {
-		src, why := agentSource(inv, agents, id)
+		src, why := agentSource(inv, agents, emptied, id)
 		if why != "" {
 			return nil, why
 		}
@@ -334,11 +348,37 @@ func agentToAgentFlows(inv domain.Inventory, agents map[string]domain.AgentInfo,
 			if src.InternetEdge {
 				return nil, fmt.Sprintf("agent %s is a cloud agent: it has no location in the model to send to", id)
 			}
+			full, fullWhy := agentSource(inv, reported, nil, id)
 			flows = append(flows, domain.Flow{TestID: t.ID, TestName: t.Name, Direction: "from-target", AgentID: id,
-				Source: domain.Source{Prefixes: targetPrefixes}, DestPrefixes: src.Prefixes, Protocol: t.Protocol, Port: t.Port})
+				Source: domain.Source{Prefixes: targetPrefixes}, DestPrefixes: src.Prefixes, Protocol: t.Protocol, Port: t.Port,
+				KeyByDest: fullWhy == "" && len(full.Prefixes) > 1})
 		}
 	}
 	return flows, ""
+}
+
+// ignoreAgentAddresses returns the agents with every address inside an ignored
+// subnet removed, and the IDs of the agents that had addresses and kept none.
+func ignoreAgentAddresses(agents map[string]domain.AgentInfo, ignored []netip.Prefix) (map[string]domain.AgentInfo, map[string]bool) {
+	out, emptied := map[string]domain.AgentInfo{}, map[string]bool{}
+	for id, a := range agents {
+		var keep []netip.Addr
+		for _, addr := range a.Addresses {
+			if !slices.ContainsFunc(ignored, func(p netip.Prefix) bool { return p.Masked().Contains(addr) }) {
+				keep = append(keep, addr)
+			}
+		}
+		if len(a.Addresses) > 0 && len(keep) == 0 {
+			emptied[id] = true
+		}
+		a.Addresses = keep
+		out[id] = a
+	}
+	return out, emptied
+}
+
+func allIgnoredReason(agent string) string {
+	return fmt.Sprintf("agent %s has all its addresses ignored (--ignore-agent-subnet)", agent)
 }
 
 func sourcePrefixes(loc domain.Location, addrs []netip.Addr) []netip.Prefix {

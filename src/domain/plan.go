@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 )
@@ -68,6 +69,23 @@ type PlanInput struct {
 	MappingSHA256  string // "none" when no mapping file is used
 	Tests          []ObservedTest
 	Agents         []ObservedAgent
+	// IgnoredAgentSubnets are the prefixes whose agent addresses were ignored,
+	// in the form CanonicalPrefixes gives.
+	IgnoredAgentSubnets []string
+}
+
+// CanonicalPrefixes returns prefixes masked, ordered by address and then
+// length, without repeats, as strings. It never returns nil.
+func CanonicalPrefixes(in []netip.Prefix) []string {
+	masked := make([]netip.Prefix, len(in))
+	for i, p := range in {
+		masked[i] = p.Masked()
+	}
+	out := []string{}
+	for _, p := range sortedPrefixes(masked) {
+		out = append(out, p.String())
+	}
+	return out
 }
 
 // PlanBody is what the digest covers.
@@ -90,6 +108,8 @@ type PlanBody struct {
 	MappingSHA256   string           `json:"mapping_sha256"`
 	Tests           []ObservedTest   `json:"observed_tests"`
 	Agents          []ObservedAgent  `json:"observed_agents"`
+	// IgnoredAgentSubnets are recorded so the digest covers them.
+	IgnoredAgentSubnets []string `json:"ignored_agent_subnets"`
 }
 
 // NewPlan builds a plan body: it counts the rows, applies the flow cap, and
@@ -203,7 +223,7 @@ func NewPlan(in PlanInput) (PlanBody, error) {
 		TE: in.TE, Forward: in.Forward, Persistent: in.Persistent, UpdateStrategy: in.UpdateStrategy,
 		MaxFlows: in.MaxFlows, Appliable: counts.Collision == 0 && !capExceeded, CapExceeded: capExceeded,
 		Rows: rows, Counts: counts, Observed: observed, Resolver: in.Resolver, Resolutions: resolutions, MappingSHA256: mapping,
-		Tests: tests, Agents: agents,
+		Tests: tests, Agents: agents, IgnoredAgentSubnets: append([]string{}, in.IgnoredAgentSubnets...),
 	}, nil
 }
 

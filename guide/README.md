@@ -46,5 +46,7 @@ The agent's own traceroute (10.20.1.1, 10.0.1.2, 10.30.1.10) matches the Forward
 (den-rtr, then dc-rtr). This is one small lab and four tests, not a general accuracy claim.
 
 The same run also made four checks from the lab's management network, because the agent has a
-management address too. Those fail, correctly for that source, but no test takes that path. See
-the [runbook](runbook.md#a-check-from-an-address-the-test-does-not-use).
+management address too. Those fail, correctly for that source, but no test takes that path.
+Planning with `--ignore-agent-subnet 172.28.28.0/24` leaves that address out: the four real
+checks stay unchanged and the four others show as stale. See the
+[runbook](runbook.md#a-check-from-an-address-the-test-does-not-use).

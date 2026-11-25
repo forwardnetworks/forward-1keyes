@@ -23,6 +23,10 @@ type Flow struct {
 	DestPrefixes []netip.Prefix
 	Protocol     string
 	Port         *int
+	// KeyByDest makes the source key carry the destination although there is
+	// only one: the destination had several before some were ignored, and a
+	// check that stays must keep its key.
+	KeyByDest bool
 }
 
 // Contributor is one test behind a planned check, with its agents.
@@ -129,7 +133,7 @@ func splitFlows(flows []Flow) []splitFlow {
 				one.Source = Source{InternetEdge: f.Source.InternetEdge, Prefixes: s}
 				one.DestPrefixes = []netip.Prefix{d}
 				sf := splitFlow{flow: one}
-				if len(dests) > 1 {
+				if len(dests) > 1 || f.KeyByDest {
 					sf.keyDest = d.Addr().String()
 					if !d.IsSingleIP() {
 						sf.keyDest = d.String()

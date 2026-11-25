@@ -63,7 +63,8 @@ BGP measurements off (private destination). Wait two five-minute rounds.
 
 ## 6. Plan, apply, compare
 
-Follow the [runbook](runbook.md). Then compare each test's loss or error in ThousandEyes with the
+Follow the [runbook](runbook.md), adding `--ignore-agent-subnet 172.28.28.0/24` so the management
+network does not become a source. Then compare each test's loss or error in ThousandEyes with the
 check's status in Forward. A comparison table from this lab is on the [guide index](README.md).
 
 ## Tear down
