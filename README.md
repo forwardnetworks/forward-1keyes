@@ -18,6 +18,17 @@ The [guide](guide/README.md) has screenshots from a real lab network, an
 
 ![ThousandEyes tests as Forward intent checks](guide/images/forward-intent-checks.png)
 
+## Builds and releases
+
+GitHub Actions tests every change on Linux, macOS and Windows. A release is built from a version
+tag for each of the three on amd64 and arm64: `.tar.gz` for Linux and macOS, `.zip` for Windows,
+with `SHA256SUMS`. Each archive is run on a matching machine before it is published. No release
+has been published yet. The binaries will not be code-signed or notarized, so macOS and Windows
+may warn before running them.
+
+On Windows the owner-only mode of the files the tool writes (the plan file) is not enforced; keep
+them in a folder only you can read.
+
 ## Build
 
     go build -o forward-1keyes ./src/cmd/forward-1keyes
