@@ -141,7 +141,11 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	fmt.Fprintf(t.opts.Log, "%s %s %s %s\n", req.Method, req.URL.Path, status, took)
 	if t.opts.Bodies {
 		t.logBody("request body", reqBody)
-		if err == nil && resp.Body != nil {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/path-vis"):
+			// Nothing from these results is printed but parsed IP addresses.
+			fmt.Fprintln(t.opts.Log, "  response body: not logged for path visualization")
+		case err == nil && resp.Body != nil:
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(body))

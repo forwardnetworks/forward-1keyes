@@ -61,6 +61,9 @@ type Deps struct {
 	Writer   ports.ForwardClient
 	Resolver ports.Resolver
 	Notifier ports.Notifier // nil unless Config.NotifyURL is set
+	// Sources is set for a live plan only; no other verb looks, and a
+	// recording holds nothing to look at.
+	Sources ports.SourceAddressReader
 }
 
 // Build makes the adapters for a Config.
@@ -365,7 +368,7 @@ func (r Runner) plan(o options) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	body, err := usecases.Plan(context.Background(), usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, usecases.PlanParams{
+	body, sources, err := usecases.PlanWithSources(context.Background(), usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, usecases.PlanParams{
 		AccountGroup: o.group, NetworkName: o.network, MaxFlows: o.maxFlows, Persistent: !o.nonPersistent,
 		UpdateStrategy: "U1", ToolVersion: ToolVersion, ResolverSetting: cfg.ResolverSetting,
 		IgnoreAgentSubnets: ignored, Source: rp.markOrNil(),
@@ -387,9 +390,11 @@ func (r Runner) plan(o options) (int, error) {
 	}
 	if o.asJSON {
 		_, _ = r.IO.Out.Write(raw)
-		return body.ExitCode(), nil
+	} else {
+		printPlan(r.IO.Out, body, o.out, digest)
 	}
-	printPlan(r.IO.Out, body, o.out, digest)
+	// The warning is outside the plan: standard error, after the plan is written.
+	fmt.Fprint(r.IO.Err, usecases.SourceWarning(context.Background(), deps.Sources, body.TE.AID, sources))
 	return body.ExitCode(), nil
 }
 

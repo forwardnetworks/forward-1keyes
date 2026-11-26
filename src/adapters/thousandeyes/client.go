@@ -73,24 +73,37 @@ func New(cfg Config) (*Client, error) {
 	return c, nil
 }
 
+// send asks for one URL once, on the one host. When the answer came but its
+// body could not be read, the response is returned with the error.
+func (c *Client) send(ctx context.Context, target string) (*http.Response, []byte, error) {
+	if !ports.HostAllowed(baseURL, target) {
+		return nil, nil, fmt.Errorf("thousandeyes adapter: refusing to request %s", redactHost(target))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thousandeyes adapter: GET %s: %w", path(target), scrub(err, c.token))
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	resp.Body.Close()
+	if err != nil {
+		err = fmt.Errorf("thousandeyes adapter: GET %s: %w", path(target), err)
+	}
+	return resp, body, err
+}
+
 // get reads one URL, retrying a 429 up to maxRetries times, and returns the body.
 func (c *Client) get(ctx context.Context, target string) ([]byte, error) {
-	if !ports.HostAllowed(baseURL, target) {
-		return nil, fmt.Errorf("thousandeyes adapter: refusing to request %s", redactHost(target))
-	}
 	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-		if err != nil {
+		resp, body, err := c.send(ctx, target)
+		if resp == nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+c.token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.hc.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("thousandeyes adapter: GET %s: %w", path(target), scrub(err, c.token))
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-		resp.Body.Close()
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
 			if attempt >= maxRetries {
@@ -100,8 +113,8 @@ func (c *Client) get(ctx context.Context, target string) ([]byte, error) {
 			continue
 		case resp.StatusCode < 200 || resp.StatusCode > 299:
 			return nil, fmt.Errorf("thousandeyes adapter: GET %s: %s", path(target), resp.Status)
-		case readErr != nil:
-			return nil, fmt.Errorf("thousandeyes adapter: GET %s: %w", path(target), readErr)
+		case err != nil:
+			return nil, err
 		}
 		return body, nil
 	}

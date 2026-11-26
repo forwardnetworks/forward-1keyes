@@ -253,6 +253,43 @@ Use the same flag on every later plan. Checks already applied from an ignored su
 
 ![the same lab with the management subnet ignored](images/cli-ignore-subnet.png)
 
+### The warning about more than one source
+
+`plan` writes a warning to standard error when, after `--ignore-agent-subnet`, one agent gives one
+test two or more source prefixes on the way to the target. For each such agent it reads the test's
+ThousandEyes path visualization results of the last hour and lists every prefix as `seen`, with
+the addresses seen, or `not seen` (`not seen in the results read` when a test could not be read, was
+not read, or reported nothing for the agent). Only `plan` does this. The warning is not part of the plan:
+the plan file, its digest, the `--json` output and the exit status are the same with or without
+it, and `apply` does not check it.
+
+It suggests `--ignore-agent-subnet` for a prefix that was not seen, and only when all of these
+hold. It never adds the flag itself.
+
+- Every test the agent is warned about was read in full, and each reported a source address for
+  that agent.
+- At least one of the agent's prefixes was seen.
+- The agent is not an enterprise cluster.
+- No other agent with a planned flow, as a source or a destination, has an address in the prefix.
+  If one does, the warning names it.
+Read the suggestion with its limits in mind:
+
+- **Not seen does not mean unused.** It is one hour, and only tests with path visualization data. A
+  route change or a second destination address can use another source.
+- The address seen may differ from the one the agent holds if something translates it, for example
+  for an agent in a container or behind NAT. This has been tried on one lab network only.
+- The flag also removes the agent's address where a check goes **to** the agent, as the return check of
+  a two-way or from-target agent-to-agent test does. Nothing about that traffic is looked up. The
+  warning says `Take care` when a suggested prefix has such a check.
+- With the flag, the next plan marks checks already made from that prefix `stale`. They stay in
+  Forward until you delete them.
+- A result that cannot be read, or is not read to the end, is reported as such. A rate limit is not
+  waited for or retried. At most 20 tests are read in one run, in test ID order, and the warning
+  says how many were not read. None of these makes `plan` fail.
+- With `--te-replay` nothing is looked up and nothing is suggested: a recording does not hold which
+  address a test used.
+- Only IP addresses are printed from these results, and `--debug-bodies` does not log their bodies.
+
 ### Cloud agents
 
 A cloud agent's traffic starts on the internet. Turning that into a check needs the Forward

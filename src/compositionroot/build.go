@@ -77,6 +77,9 @@ func BuildWith(cfg Config, opts BuildOptions) (Deps, error) {
 			return Deps{}, err
 		}
 		deps.TE = te
+		if cfg.Verb == "plan" {
+			deps.Sources = te
+		}
 	}
 	if cfg.Recording == nil {
 		server := strings.TrimPrefix(cfg.ResolverSetting, "server:")

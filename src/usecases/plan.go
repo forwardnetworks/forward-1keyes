@@ -42,26 +42,54 @@ const nameLimit = 255
 // Plan reads ThousandEyes and Forward and builds a plan. It never writes: the
 // ports it is given have no write method.
 func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, error) {
+	body, _, err := PlanWithSources(ctx, deps, p)
+	return body, err
+}
+
+// PlanWithSources is Plan that also says which agents give one test more than
+// one source, judged on the flows the plan was built from. It reads no more
+// than Plan does; SourceWarning does the looking.
+func PlanWithSources(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, domain.SourceReport, error) {
+	var found domain.SourceReport
+	body, flows, agents, used, err := buildPlan(ctx, deps, p)
+	if err != nil {
+		return domain.PlanBody{}, found, err
+	}
+	found = domain.SourceReport{Agents: domain.MultiSourceAgents(flows, agents), Used: map[string][]netip.Addr{},
+		ReturnTo: domain.ReturnDestinations(flows), Recording: p.Source != nil}
+	for id := range used {
+		found.Used[id] = agents[id].Addresses
+	}
+	return body, found, nil
+}
+
+// buildPlan builds the plan, and returns with it the located flows, the agents
+// with the ignored addresses removed, and the IDs of the agents at either end
+// of a flow.
+func buildPlan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, []domain.Flow, map[string]domain.AgentInfo, map[string]bool, error) {
+	fail := func(err error) (domain.PlanBody, []domain.Flow, map[string]domain.AgentInfo, map[string]bool, error) {
+		return domain.PlanBody{}, nil, nil, nil, err
+	}
 	groups, err := deps.TE.AccountGroups(ctx)
 	if err != nil {
-		return domain.PlanBody{}, fmt.Errorf("reading ThousandEyes account groups: %w", err)
+		return fail(fmt.Errorf("reading ThousandEyes account groups: %w", err))
 	}
 	group, err := domain.ResolveAccountGroup(groups, p.AccountGroup)
 	if err != nil {
-		return domain.PlanBody{}, err
+		return fail(err)
 	}
 
 	configs, err := readTests(ctx, deps.TE, group.AID)
 	if err != nil {
-		return domain.PlanBody{}, err
+		return fail(err)
 	}
 	selected, err := domain.Select(configs, p.Selection)
 	if err != nil {
-		return domain.PlanBody{}, err
+		return fail(err)
 	}
 	agentList, err := deps.TE.ListAgents(ctx, group.AID)
 	if err != nil {
-		return domain.PlanBody{}, fmt.Errorf("reading ThousandEyes agents: %w", err)
+		return fail(fmt.Errorf("reading ThousandEyes agents: %w", err))
 	}
 	agents := map[string]domain.AgentInfo{}
 	for _, a := range agentList {
@@ -76,23 +104,24 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 
 	networkID, err := deps.Forward.NetworkByName(ctx, p.NetworkName)
 	if err != nil {
-		return domain.PlanBody{}, fmt.Errorf("finding Forward network %q: %w", p.NetworkName, err)
+		return fail(fmt.Errorf("finding Forward network %q: %w", p.NetworkName, err))
 	}
 	snapshot, err := deps.Forward.LatestSnapshot(ctx, networkID)
 	if err != nil {
-		return domain.PlanBody{}, fmt.Errorf("finding the latest snapshot: %w", err)
+		return fail(fmt.Errorf("finding the latest snapshot: %w", err))
 	}
 	inv, err := deps.Forward.Inventory(ctx, snapshot)
 	if err != nil {
-		return domain.PlanBody{}, fmt.Errorf("reading the inventory of snapshot %s: %w", snapshot, err)
+		return fail(fmt.Errorf("reading the inventory of snapshot %s: %w", snapshot, err))
 	}
 	checks, err := deps.Forward.ListChecks(ctx, snapshot)
 	if err != nil {
-		return domain.PlanBody{}, fmt.Errorf("listing checks on snapshot %s: %w", snapshot, err)
+		return fail(fmt.Errorf("listing checks on snapshot %s: %w", snapshot, err))
 	}
 
 	var rows []domain.Row
 	var flows []domain.Flow
+	targets := map[string]bool{}
 	for _, t := range selected {
 		if !t.Enabled {
 			rows = append(rows, notImportableRow(t.Name, "disabled", "the test is disabled in ThousandEyes", t.ID))
@@ -105,6 +134,9 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 				continue
 			}
 			flows = append(flows, fs...)
+			if len(fs) > 0 {
+				targets[t.Target] = true
+			}
 			continue
 		}
 		res := domain.MapFlows(t, pins)
@@ -177,7 +209,11 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 	if setting == "" {
 		setting = "system"
 	}
-	return domain.NewPlan(domain.PlanInput{
+	ends := targets
+	for _, f := range flows {
+		ends[f.AgentID] = true
+	}
+	body, err := domain.NewPlan(domain.PlanInput{
 		ToolVersion: p.ToolVersion, TE: domain.TEInfo{AccountGroupName: group.Name, AID: group.AID},
 		Forward:    domain.ForwardInfo{NetworkID: networkID, NetworkName: p.NetworkName, SnapshotID: snapshot},
 		Persistent: p.Persistent, UpdateStrategy: p.UpdateStrategy, MaxFlows: p.MaxFlows, Rows: rows,
@@ -185,6 +221,7 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 		Tests: observedTests(selected), Agents: observedAgents(agents, usedAgents),
 		IgnoredAgentSubnets: domain.CanonicalPrefixes(p.IgnoreAgentSubnets), Source: p.Source,
 	})
+	return body, flows, reachable, ends, err
 }
 
 // readTests reads the test list, and the detail of every test of a supported

@@ -95,7 +95,10 @@ client.
   destination address; every other key is unchanged.
 - Forward's model has connected subnets, not end hosts, so a destination is located by subnet.
 - An agent's every modelled address becomes a source. `--ignore-agent-subnet <CIDR>` leaves out,
-  for example, a management subnet.
+  for example, a management subnet. When one agent gives a test more than one source, `plan` warns on
+  standard error, says which were seen sending in the last hour, and may suggest the flag. It
+  changes nothing itself, and not being seen does not prove a prefix unused. See the
+  [runbook](guide/runbook.md#the-warning-about-more-than-one-source).
 - "From the internet" needs the network's internet node to have a connection; its check form is
   not verified. A test from a cloud agent is reported as not importable, with the reason that the
   network's internet node has no connection when that is the case.
