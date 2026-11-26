@@ -1,0 +1,14 @@
+# Starts forward-1keyes-changes.service every 15 minutes. A oneshot service is
+# not started again while it is still running, so runs do not overlap.
+# Enable it with: systemctl enable --now forward-1keyes-changes.timer
+# The environment file the service reads must be mode 600.
+[Unit]
+Description=Run forward-1keyes changes on a schedule
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+Unit=forward-1keyes-changes.service
+
+[Install]
+WantedBy=timers.target

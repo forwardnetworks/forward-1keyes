@@ -46,12 +46,19 @@ func (p PendingWork) String() string {
 
 // Changes is what differs between two snapshots, and what plan would now do.
 type Changes struct {
-	Network          string        `json:"network"`
-	From             string        `json:"from"`
-	To               string        `json:"to"`
-	NothingToCompare bool          `json:"nothing_to_compare"`
-	Changes          []CheckChange `json:"changes"`
-	Plan             PendingWork   `json:"plan"`
+	Network          string `json:"network"`
+	From             string `json:"from"`
+	To               string `json:"to"`
+	NothingToCompare bool   `json:"nothing_to_compare"`
+	// NothingNew is set when --state remembers the latest snapshot already.
+	NothingNew bool `json:"nothing_new,omitempty"`
+	// StateWritten is present only with --state, and says whether the file was written.
+	StateWritten *bool `json:"state_written,omitempty"`
+	// NetworkID and AccountGroupID are what a state file is bound to; they are not output.
+	NetworkID      string        `json:"-"`
+	AccountGroupID string        `json:"-"`
+	Changes        []CheckChange `json:"changes"`
+	Plan           PendingWork   `json:"plan"`
 	// Recording is set when the ThousandEyes data came from a recording.
 	Recording *RecordingMark `json:"recording,omitempty"`
 }
@@ -59,9 +66,12 @@ type Changes struct {
 // Reportable says whether there is something to tell: a change or waiting work.
 func (c Changes) Reportable() bool { return len(c.Changes) > 0 || c.Plan.waiting() }
 
-// ExitCode is 0 only when two snapshots were compared and there is nothing to
-// tell; otherwise 2.
+// ExitCode is 0 when two snapshots were compared and there is nothing to tell,
+// or when nothing is new since the remembered snapshot; otherwise 2.
 func (c Changes) ExitCode() int {
+	if c.NothingNew {
+		return 0
+	}
 	if c.NothingToCompare || c.Reportable() {
 		return 2
 	}

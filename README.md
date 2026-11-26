@@ -49,7 +49,7 @@ Secrets come from the environment only. No flag takes a secret or a host.
     forward-1keyes apply --plan forward-1keyes.plan.json --digest sha256:<hex>
     forward-1keyes status --network "<Forward network>"
     forward-1keyes report --network "<Forward network>" --te-account-group "<account group>"
-    forward-1keyes changes --network "<Forward network>" --te-account-group "<account group>" [--notify]
+    forward-1keyes changes --network "<Forward network>" --te-account-group "<account group>" [--notify] [--state FILE]
     forward-1keyes listen --network "<Forward network>" --te-account-group "<account group>"
     forward-1keyes record --te-account-group "<account group>" --out thousandeyes.rec.json [--window 1h] [--force]
     forward-1keyes report --network "<Forward network>" --te-account-group "<account group>" --te-replay thousandeyes.rec.json
@@ -60,8 +60,9 @@ Secrets come from the environment only. No flag takes a secret or a host.
   has changed since you approved it, and then writes in batches.
 - `report` only reads. It puts each check's latest ThousandEyes measurement beside its Forward status
   and says where to look first.
-- `changes` only reads. It lists the checks that broke or recovered since the previous snapshot, and
-  with `--notify` posts one signed message to the https URL in `NOTIFY_URL`.
+- `changes` only reads ThousandEyes and Forward (with `--state` it also writes that one small file). It lists the checks that broke or recovered since the previous snapshot, and
+  with `--notify` posts one signed message to the https URL in `NOTIFY_URL`. With `--state FILE` it
+  remembers the last snapshot it finished with, so a timer repeats nothing and misses nothing; see `deploy/`.
 - `listen` receives a ThousandEyes alert webhook on loopback (put HTTPS in front of it) and answers with
   what Forward models for the alerted test: one signed message per alert to `NOTIFY_URL`. It needs
   `ALERT_TOKEN` (at least 32 characters) and only reads. See [webhooks](guide/webhooks.md).

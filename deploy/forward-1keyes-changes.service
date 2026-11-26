@@ -1,0 +1,32 @@
+# Runs forward-1keyes once and exits; forward-1keyes-changes.timer starts it.
+# Copy to /etc/systemd/system/, edit the network and account group names, and
+# put the secrets in /etc/forward-1keyes/env (see the environment file below).
+[Unit]
+Description=Tell someone what changed between Forward snapshots
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The environment file holds TE_API_TOKEN, FWD_URL, FWD_USER, FWD_PASS and
+# NOTIFY_URL (and NOTIFY_SECRET, if you sign). Make it owner-only: chmod 600,
+# owned by root. No secret belongs in this unit. systemd reads it with its own
+# rules (no shell): a value is the text after the =, quoted only if it needs it.
+# A run that hangs would block every later one, so it is stopped after ten minutes.
+TimeoutStartSec=10min
+UMask=0077
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+EnvironmentFile=/etc/forward-1keyes/env
+# The service owns /var/lib/forward-1keyes (mode 700), which is where the state
+# file lives, so the next run compares from the snapshot this one finished with.
+StateDirectory=forward-1keyes
+StateDirectoryMode=0700
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Exit 2 means a change or waiting work was found: a result, not a failure.
+SuccessExitStatus=2
+ExecStart=/usr/local/bin/forward-1keyes changes --network my-network --te-account-group my-group --state %S/forward-1keyes/state.json --notify

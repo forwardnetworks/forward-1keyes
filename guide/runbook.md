@@ -132,22 +132,43 @@ collision row. It has a `text` summary (so a chat incoming webhook can show it),
 
 ### Running it
 
-It stores nothing and runs no server: run it from a timer, or from whatever handles a Forward webhook
-for a processed snapshot. To avoid repeats, and not to miss a change when several snapshots arrived,
-remember the `to` of the last run and pass it as `--since`:
+It runs no server: run it from a timer, or from whatever handles a Forward webhook for a processed
+snapshot. Give it a file to remember where it got to:
 
-    last=$(cat last-snapshot 2>/dev/null)
-    forward-1keyes changes ... --json ${last:+--since "$last"} --notify > changes.json
-    status=$?
-    [ "$status" -ne 1 ] && jq -r .to changes.json > last-snapshot
+    forward-1keyes changes ... --state /var/lib/forward-1keyes/state.json --notify
 
-If no newer snapshot has arrived, `--since` equal to the latest is refused with exit 1; treat that as
-nothing new. A change that breaks and recovers between two runs does not show. A standing stale check
-is reported on every run until you delete it.
+- The first run compares the latest processed snapshot with the one before it and writes the file. Each
+  later run compares from the remembered snapshot to the latest, so nothing is repeated and nothing is
+  missed when several snapshots arrived between runs.
+- If the latest processed snapshot is the remembered one, it says `nothing new`, sends nothing and exits
+  0. It still reads Forward, so an unreachable Forward is an error (exit 1), never "nothing new".
+- The file is written only when the run finished: the comparison was made and, with `--notify`, the
+  message was answered with 2xx (or there was nothing to send). Exit 2 counts as finished. A run that
+  fails leaves the file as it was, so the next run covers the same pair again; a receiver may then see
+  the same message twice. With `--json`, `state_written` says whether the file was written.
+- The file holds the network ID, the account group ID, the snapshot ID, the time and the tool version,
+  and no secret. It is written whole or not at all, mode 600. A file for another network or account
+  group, one that is not valid, has an unknown field, is over 64 KiB or is not a regular file is refused.
+  A remembered snapshot that is no longer processed is an error: delete the file to start over.
+- `--state` cannot be combined with `--since`. If the file is lost, the next run compares the latest
+  snapshot with the one before it.
+- The tool takes no lock; do not run two at once on one file. The shipped units do not overlap runs; the
+  cron example keeps its lock in the state directory (`.lock`: leave it there).
+- A state file the run could not write is refused before anything is read or sent, so a read-only
+  or missing directory does not cause the same message every run.
+- The environment file is read by systemd and, in the cron example, by `sh`: quote a value that holds a
+  space, `$`, `&` or a backtick for `sh`, and use systemd's own quoting for the unit.
 
-Exit status: **0** when two snapshots were compared and there is nothing to tell; **2** when there is
-a change or waiting work, or only one snapshot; **1** on an error. A failed read is an error, never
-"no change", and nothing is sent.
+The `deploy/` directory has a systemd service and timer and a cron line that run exactly this, read the
+secrets from an owner-only environment file (mode 600) and keep the file in a directory the service owns.
+They hold no secret.
+
+A change that breaks and recovers between two runs does not show. A standing stale check is reported on
+every run until you delete it.
+
+Exit status: **0** when two snapshots were compared and there is nothing to tell, or nothing is new;
+**2** when there is a change or waiting work, or only one snapshot; **1** on an error. A failed read is
+an error, never "no change", and nothing is sent.
 
 ## Record ThousandEyes data and replay it
 

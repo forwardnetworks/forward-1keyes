@@ -15,6 +15,10 @@ import (
 type ChangesParams struct {
 	Plan  PlanParams
 	Since string // the older snapshot; empty means the one before the latest
+	// Stateful is set with --state; Remembered is the state file read, or nil
+	// when there is none yet. Since is empty then.
+	Stateful   bool
+	Remembered *domain.State
 }
 
 // pinned makes the plan pipeline read the same latest snapshot the comparison
@@ -50,6 +54,23 @@ func Changes(ctx context.Context, deps PlanDeps, p ChangesParams) (domain.Change
 	if err != nil {
 		return domain.Changes{}, fmt.Errorf("finding Forward network %q: %w", p.Plan.NetworkName, err)
 	}
+	accountGroupID := ""
+	if p.Stateful {
+		groups, err := deps.TE.AccountGroups(ctx)
+		if err != nil {
+			return domain.Changes{}, fmt.Errorf("reading ThousandEyes account groups: %w", err)
+		}
+		group, err := domain.ResolveAccountGroup(groups, p.Plan.AccountGroup)
+		if err != nil {
+			return domain.Changes{}, err
+		}
+		accountGroupID = group.AID
+		if p.Remembered != nil {
+			if err := p.Remembered.Bind(network, accountGroupID); err != nil {
+				return domain.Changes{}, err
+			}
+		}
+	}
 	snapshots, err := lister.ProcessedSnapshots(ctx, network)
 	if err != nil {
 		return domain.Changes{}, fmt.Errorf("listing snapshots: %w", err)
@@ -58,8 +79,18 @@ func Changes(ctx context.Context, deps PlanDeps, p ChangesParams) (domain.Change
 		return domain.Changes{}, errors.New("the network has no processed snapshot")
 	}
 	latest := len(snapshots) - 1
-	out := domain.Changes{Network: p.Plan.NetworkName, To: snapshots[latest], Changes: []domain.CheckChange{}}
+	out := domain.Changes{Network: p.Plan.NetworkName, To: snapshots[latest], Changes: []domain.CheckChange{}, NetworkID: network, AccountGroupID: accountGroupID}
 	switch {
+	case p.Remembered != nil:
+		from, nothingNew, err := p.Remembered.ChooseFrom(snapshots)
+		if err != nil {
+			return domain.Changes{}, err
+		}
+		if nothingNew {
+			out.NothingNew = true
+			return out, nil
+		}
+		out.From = from
 	case p.Since != "":
 		i := slices.Index(snapshots, p.Since)
 		if i < 0 || i >= latest {

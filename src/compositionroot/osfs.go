@@ -42,6 +42,44 @@ func (OSFS) ReadFileLimited(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
+// ReadState reads a state file. A path with nothing at it is no file yet; one
+// that is anything but a regular file (a link, a directory, a device) or is
+// longer than limit is an error.
+func (o OSFS) ReadState(path string, limit int64) ([]byte, bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s is not a regular file (a link, directory or device is refused)", path)
+	}
+	data, err := o.ReadFileLimited(path, limit)
+	return data, err == nil, err
+}
+
+// WritableDir says whether this process could write in dir, without touching
+// it: a failed run must leave the directory as it was, mtime included. The
+// kernel is asked (access(2) where the platform has it, so a read-only mount or
+// a directory owned by someone else is refused); a run with --state asks before
+// it contacts anyone, so a state file that cannot be written does not cost a
+// notification on every run.
+func (OSFS) WritableDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if err := writableByKernel(dir); err != nil {
+		return fmt.Errorf("%s cannot be written: %w", dir, err)
+	}
+	return nil
+}
+
 // Exists says whether something is at path.
 func (OSFS) Exists(path string) (bool, error) {
 	_, err := os.Lstat(path)

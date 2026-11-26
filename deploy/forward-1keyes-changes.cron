@@ -1,0 +1,17 @@
+# /etc/cron.d/forward-1keyes-changes: the same run as the systemd units, for a
+# host without systemd. Edit the names, then install it as root.
+#
+# The environment file holds the secrets (the ThousandEyes token, the Forward
+# URL, user and password, and the notification URL). Make it owner-only:
+# chmod 600 /etc/forward-1keyes/env. No secret belongs in this file.
+# Unlike the systemd unit, cron runs as the user named below (fwdsvc here), and that user reads
+# the file: it must be owned by fwdsvc, not by root: chown fwdsvc /etc/forward-1keyes/env.
+# The file is read by sh: quote a value that holds a space, $, & or a backtick.
+# The state directory must exist and belong to the same user: mkdir -m 700
+# /var/lib/forward-1keyes && chown fwdsvc /var/lib/forward-1keyes
+#
+# In a cron line a % must be written \%, and the command is on one line.
+# flock -n skips a run while the last one is still going, so runs do not overlap. The lock
+# is kept in the state directory, which that user can always write.
+# Exit 2 (a change was found) is a result; cron mails any output, so keep stdout quiet if you wish.
+*/15 * * * * fwdsvc flock -n /var/lib/forward-1keyes/.lock sh -c 'set -a; . /etc/forward-1keyes/env; set +a; exec /usr/local/bin/forward-1keyes changes --network my-network --te-account-group my-group --state /var/lib/forward-1keyes/state.json --notify'

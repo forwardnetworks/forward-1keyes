@@ -99,7 +99,7 @@ type options struct {
 	group, network, out, resolver, planFile, digest, results, snapshot string
 	maxFlows, batchSize                                                int
 	window                                                             time.Duration
-	since, address                                                     string
+	since, address, state                                              string
 	notify                                                             bool
 	replay, recordOut                                                  string
 	force, windowSet                                                   bool
@@ -150,6 +150,7 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
 		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
 		fs.StringVar(&o.since, "since", "", "the older snapshot ID (default: the processed snapshot before the latest)")
+		fs.StringVar(&o.state, "state", "", "remember the last snapshot a run finished with in this file, and compare from it next time (not with --since)")
 		fs.BoolVar(&o.notify, "notify", false, "POST a message to NOTIFY_URL when there is something to tell")
 		fs.BoolVar(&o.asJSON, "json", false, "print JSON instead of a table")
 		selection()
@@ -460,6 +461,9 @@ func (r Runner) report(o options) (int, error) {
 }
 
 func (r Runner) changes(o options) (int, error) {
+	if o.state != "" && o.since != "" {
+		return 0, errors.New("--state and --since cannot be used together: the state file says where the comparison starts")
+	}
 	// Everything the flags and the environment say is checked before anything is
 	// built or read.
 	ignored, err := ignoredSubnets(o)
@@ -471,6 +475,13 @@ func (r Runner) changes(o options) (int, error) {
 		if notifyURL, err = ports.ValidateNotifyURL(r.Env("NOTIFY_URL")); err != nil {
 			return 0, fmt.Errorf("--notify needs NOTIFY_URL: %w", err)
 		}
+	}
+	remembered, err := r.readState(o)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.checkStateWritable(o); err != nil {
+		return 0, err
 	}
 	rp, err := r.loadReplay(o, o.group)
 	if err != nil {
@@ -490,7 +501,7 @@ func (r Runner) changes(o options) (int, error) {
 	}
 	ctx := context.Background()
 	result, err := usecases.Changes(ctx, usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, usecases.ChangesParams{
-		Since: o.since,
+		Since: o.since, Stateful: o.state != "", Remembered: remembered,
 		Plan: usecases.PlanParams{
 			AccountGroup: o.group, NetworkName: o.network, MaxFlows: 500, Persistent: true,
 			UpdateStrategy: "U1", ToolVersion: ToolVersion, ResolverSetting: cfg.ResolverSetting, IgnoreAgentSubnets: ignored,
@@ -501,6 +512,24 @@ func (r Runner) changes(o options) (int, error) {
 		return 0, err
 	}
 	result.Recording = rp.markOrNil()
+	// The notification and the state file come before the output, so that the
+	// result can say whether the file was written.
+	var notifyErr error
+	if o.notify {
+		if err := usecases.Notify(ctx, deps.Notifier, result); err != nil {
+			notifyErr = fmt.Errorf("the notification was not delivered: %w", err)
+		}
+	}
+	var stateErr error
+	if o.state != "" {
+		written := false
+		result.StateWritten = &written
+		if notifyErr == nil && !result.NothingNew {
+			if stateErr = r.writeState(o.state, result); stateErr == nil {
+				written = true
+			}
+		}
+	}
 	if o.asJSON {
 		raw, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -510,10 +539,11 @@ func (r Runner) changes(o options) (int, error) {
 	} else {
 		printChanges(r.IO.Out, result)
 	}
-	if o.notify {
-		if err := usecases.Notify(ctx, deps.Notifier, result); err != nil {
-			return 0, fmt.Errorf("the notification was not delivered: %w", err)
-		}
+	if notifyErr != nil {
+		return 0, notifyErr
+	}
+	if stateErr != nil {
+		return 0, stateErr
 	}
 	return result.ExitCode(), nil
 }
@@ -521,6 +551,10 @@ func (r Runner) changes(o options) (int, error) {
 func printChanges(w io.Writer, c domain.Changes) {
 	if c.Recording != nil {
 		fmt.Fprintln(w, c.Recording.Line())
+	}
+	if c.NothingNew {
+		fmt.Fprintf(w, "changes on %s: nothing new since snapshot %s\n", c.Network, c.To)
+		return
 	}
 	if c.NothingToCompare {
 		fmt.Fprintf(w, "changes on %s: nothing to compare, snapshot %s is the only processed one\n", c.Network, c.To)
