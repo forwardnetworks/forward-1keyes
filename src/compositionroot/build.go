@@ -11,6 +11,7 @@ import (
 
 	"github.com/forwardnetworks/forward-1keyes/src/adapters/dns"
 	"github.com/forwardnetworks/forward-1keyes/src/adapters/forward"
+	"github.com/forwardnetworks/forward-1keyes/src/adapters/notify"
 	"github.com/forwardnetworks/forward-1keyes/src/adapters/thousandeyes"
 )
 
@@ -29,7 +30,7 @@ func DefaultBuild(cfg Config) (Deps, error) { return BuildWith(cfg, BuildOptions
 func BuildWith(cfg Config, opts BuildOptions) (Deps, error) {
 	mode := ModeForwardRead
 	switch cfg.Verb {
-	case "plan", "status", "report":
+	case "plan", "status", "report", "changes":
 	case "apply":
 		mode = ModeForwardApply
 	default:
@@ -40,7 +41,7 @@ func BuildWith(cfg Config, opts BuildOptions) (Deps, error) {
 		log = os.Stderr
 	}
 	var secrets []string
-	for _, s := range []string{cfg.TEToken, cfg.ForwardPass} {
+	for _, s := range []string{cfg.TEToken, cfg.ForwardPass, cfg.NotifySecret, cfg.NotifyURL} {
 		if s != "" {
 			secrets = append(secrets, s)
 		}
@@ -72,5 +73,16 @@ func BuildWith(cfg Config, opts BuildOptions) (Deps, error) {
 		return Deps{}, err
 	}
 	deps.Resolver = resolver
+	if cfg.NotifyURL != "" {
+		// Its own client: one POST to one URL, with no service credential.
+		hc := &http.Client{Transport: NewTransport(TransportOptions{
+			Base: opts.BaseTransport, Mode: ModeNotify, NotifyURL: cfg.NotifyURL, Log: log, Debug: cfg.Debug,
+		})}
+		notifier, err := notify.New(notify.Config{URL: cfg.NotifyURL, Secret: cfg.NotifySecret, HTTPClient: hc})
+		if err != nil {
+			return Deps{}, err
+		}
+		deps.Notifier = notifier
+	}
 	return deps, nil
 }

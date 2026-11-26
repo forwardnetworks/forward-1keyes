@@ -24,6 +24,8 @@ type CheckResult struct {
 	Status      string
 	Outdated    bool
 	Destination string // the destination of the check as Forward holds it
+	Name        string
+	Tags        []string
 }
 
 // How one record reads, and how the records of a check combine.

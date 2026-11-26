@@ -34,6 +34,10 @@ Account and test identifiers in the images are replaced with placeholders.
 
 ![report](images/cli-report.png)
 
+`changes` says what flipped between two snapshots, and can notify:
+
+![changes](images/cli-changes.png)
+
 ## Proof from a real network
 
 From the [lab](lab-runbook.md): the same flows, measured by a ThousandEyes agent sending real

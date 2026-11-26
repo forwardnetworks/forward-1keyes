@@ -23,6 +23,8 @@ const (
 	ModeForwardRead
 	// ModeForwardApply also allows creating and updating checks.
 	ModeForwardApply
+	// ModeNotify allows one thing: a POST to exactly NotifyURL.
+	ModeNotify
 )
 
 // TransportOptions configures NewTransport.
@@ -34,6 +36,8 @@ type TransportOptions struct {
 	Bodies  bool      // also log bodies, redacted
 	Secrets []string  // removed from anything logged
 	Now     func() time.Time
+	// NotifyURL is the one URL ModeNotify may POST to. It is a secret.
+	NotifyURL string
 }
 
 const maxLoggedBody = 4096
@@ -61,6 +65,13 @@ func NewTransport(opts TransportOptions) http.RoundTripper {
 
 func (t *transport) allow(req *http.Request) error {
 	method, escaped := req.Method, req.URL.EscapedPath()
+	if t.opts.Mode == ModeNotify {
+		// The URL is a secret: a refusal never shows it.
+		if method == http.MethodPost && t.opts.NotifyURL != "" && req.URL.String() == t.opts.NotifyURL {
+			return nil
+		}
+		return fmt.Errorf("refusing a %s: the notification client only posts to the notification URL", method)
+	}
 	if method == http.MethodDelete {
 		return errors.New("refusing a DELETE: the tool never deletes")
 	}
@@ -75,7 +86,8 @@ func (t *transport) allow(req *http.Request) error {
 		return nil
 	case ModeForwardRead, ModeForwardApply:
 		if !ports.RequestPathAllowed(escaped) {
-			return fmt.Errorf("refusing a request outside /api: %s", escaped)
+			// The path is left out: a URL meant for somewhere else can be a secret.
+			return errors.New("refusing a request outside /api")
 		}
 		switch {
 		case method == http.MethodGet:
@@ -97,6 +109,19 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	logging := t.opts.Debug && t.opts.Log != nil
+	if t.opts.Mode == ModeNotify {
+		// Neither the URL nor the receiver's answer is logged.
+		start := t.opts.Now()
+		resp, err := t.opts.Base.RoundTrip(req)
+		if logging {
+			status := "error"
+			if err == nil {
+				status = fmt.Sprint(resp.StatusCode)
+			}
+			fmt.Fprintf(t.opts.Log, "POST (notification) %s %s\n", status, t.opts.Now().Sub(start).Round(time.Millisecond))
+		}
+		return resp, err
+	}
 	var reqBody []byte
 	if logging && t.opts.Bodies && req.Body != nil {
 		reqBody, _ = io.ReadAll(req.Body)

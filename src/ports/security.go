@@ -20,6 +20,9 @@ func Redact(s string, secrets []string) string { return domain.Redact(s, secrets
 // ValidateForwardURL checks FWD_URL and returns it without a trailing slash.
 func ValidateForwardURL(raw string) (string, error) { return domain.ValidateForwardURL(raw) }
 
+// ValidateNotifyURL checks NOTIFY_URL and returns it as it will be requested.
+func ValidateNotifyURL(raw string) (string, error) { return domain.ValidateNotifyURL(raw) }
+
 // MinSecretLength is the shortest secret the tool accepts.
 const MinSecretLength = domain.MinSecretLength
 

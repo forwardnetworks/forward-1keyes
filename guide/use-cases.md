@@ -57,17 +57,19 @@ ThousandEyes webhook can authenticate itself to the receiver still has to be che
 
 ## Forward to ThousandEyes
 
-### 5. Re-plan when Forward has a new snapshot — Proposed
+### 5. Re-plan on a new snapshot — Built (run it on a timer or your own hook)
 
-A Forward webhook for a processed snapshot would run `plan` and report anything that changed:
-new tests without checks, stale checks, tests that are no longer importable. It reads only;
-`apply` stays with a person. Until then, the same thing works on a timer.
+`changes` counts what `plan` would do now: new tests without checks, changed and stale checks,
+collisions and tests that cannot be imported. It reads only; `apply` stays with a person. The tool
+runs no server, so a timer, or whatever handles a Forward snapshot webhook, has to start it.
 
-### 6. Notify when a managed check flips — Proposed
+### 6. Notify when a managed check flips — Built
 
-On a new snapshot, compare managed check statuses with the previous one and send the changes,
-naming the ThousandEyes tests behind each. This warns that a monitored flow is expected to break
-before or without a ThousandEyes alert.
+`changes --notify` lists the checks that broke or recovered between two snapshots, names the
+ThousandEyes tests behind each, and posts one signed message. In the lab, blocking a port produced
+one "broke" and removing the block one "recovered"; see the
+[runbook](runbook.md#what-changed-since-the-last-snapshot-and-a-notification). It was tested against
+a receiver on the same machine, not against a particular chat product.
 
 ### 7. Create ThousandEyes tests from Forward checks — Proposed
 
@@ -93,7 +95,7 @@ been tried. A comparison would flag where the measured path leaves the modelled 
 
 ## Suggested order
 
-1. Snapshot re-plan and check-flip notices (5, 6): reads only.
-2. Alert enrichment receiver (4): needs a reachable endpoint and an authentication decision. It can
+1. Alert enrichment receiver (4): needs a reachable endpoint and an authentication decision. It can
    answer with the verdict that `report` computes.
-3. Test creation (7): first feature that writes to ThousandEyes.
+2. Test creation (7): first feature that writes to ThousandEyes.
+3. Hop-by-hop path comparison (8).

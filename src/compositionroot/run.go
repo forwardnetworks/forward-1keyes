@@ -35,7 +35,7 @@ type FS interface {
 // Config is what the adapters are built from. It is read from the environment,
 // never from flags.
 type Config struct {
-	Verb            string // "plan", "apply" or "status"
+	Verb            string // "plan", "apply", "status", "report" or "changes"
 	ToolVersion     string
 	NeedTE          bool // false for status and apply: no ThousandEyes token is read
 	TEToken         string
@@ -45,6 +45,8 @@ type Config struct {
 	ResolverSetting string // "system" or "server:<ip:port>"
 	Debug           bool
 	DebugBodies     bool
+	NotifyURL       string // set only for changes --notify; a secret
+	NotifySecret    string // signs notifications when set
 }
 
 // Deps are the ports the use cases run on.
@@ -53,6 +55,7 @@ type Deps struct {
 	Reader   ports.ForwardReader
 	Writer   ports.ForwardClient
 	Resolver ports.Resolver
+	Notifier ports.Notifier // nil unless Config.NotifyURL is set
 }
 
 // Build makes the adapters for a Config.
@@ -81,6 +84,8 @@ type options struct {
 	group, network, out, resolver, planFile, digest, results, snapshot string
 	maxFlows, batchSize                                                int
 	window                                                             time.Duration
+	since                                                              string
+	notify                                                             bool
 	// Each verb's defaults are written here when its flags are registered, so
 	// a flag whose default differs between verbs needs its own field.
 	reportOut                                                         string
@@ -104,6 +109,14 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.StringArrayVar(&o.ignoreAgentSubnets, "ignore-agent-subnet", nil, "ignore agent addresses in this CIDR, for example a management subnet (repeatable)")
 	}
 	switch verb {
+	case "changes":
+		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
+		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
+		fs.StringVar(&o.since, "since", "", "the older snapshot ID (default: the processed snapshot before the latest)")
+		fs.BoolVar(&o.notify, "notify", false, "POST a message to NOTIFY_URL when there is something to tell")
+		fs.BoolVar(&o.asJSON, "json", false, "print JSON instead of a table")
+		selection()
+		debug()
 	case "report":
 		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
 		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
@@ -147,22 +160,29 @@ func FlagNames(verb string) []string {
 }
 
 var verbHelp = map[string]string{
-	"report": "compare what ThousandEyes measured with what Forward concluded; reads only",
-	"plan":   "read ThousandEyes and Forward and write a plan; changes nothing",
-	"apply":  "write an approved plan to Forward, after checking its digest and the world",
-	"status": "list the checks this tool manages and flag bad tuples; reads only Forward",
+	"changes": "compare checks on two snapshots and count pending work; reads only, can notify",
+	"report":  "compare what ThousandEyes measured with what Forward concluded; reads only",
+	"plan":    "read ThousandEyes and Forward and write a plan; changes nothing",
+	"apply":   "write an approved plan to Forward, after checking its digest and the world",
+	"status":  "list the checks this tool manages and flag bad tuples; reads only Forward",
 }
 
 // command builds the cobra tree. The exit code of the verb that ran goes to *code.
 func (r Runner) command(code *int) *cobra.Command {
-	flagErr := func(_ *cobra.Command, err error) error { return usageError{err.Error()} }
+	flagErr := func(_ *cobra.Command, err error) error {
+		// A bad --notify value would be echoed back, and it may be the secret URL.
+		if strings.Contains(err.Error(), "--notify\"") {
+			return usageError{"--notify takes no value; the URL comes from NOTIFY_URL"}
+		}
+		return usageError{err.Error()}
+	}
 	root := &cobra.Command{
 		Use:           "forward-1keyes",
 		Short:         "turn ThousandEyes tests into Forward intent checks",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(*cobra.Command, []string) error {
-			return usageError{"a verb is required: plan, apply, status or report"}
+			return usageError{"a verb is required: plan, apply, status, report or changes"}
 		},
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -170,7 +190,7 @@ func (r Runner) command(code *int) *cobra.Command {
 	root.SetErr(r.IO.Err)
 	root.SetFlagErrorFunc(flagErr)
 	var o options
-	for _, verb := range []string{"plan", "apply", "status", "report"} {
+	for _, verb := range []string{"plan", "apply", "status", "report", "changes"} {
 		verb := verb
 		sub := &cobra.Command{
 			Use:   verb,
@@ -201,7 +221,7 @@ func (r Runner) Run(args []string) int {
 	if err := root.Execute(); err != nil {
 		var u usageError
 		if errors.As(err, &u) {
-			fmt.Fprintf(r.IO.Err, "usage error: %s\nusage: forward-1keyes plan|apply|status|report [flags]  (--help lists the flags)\n", u.msg)
+			fmt.Fprintf(r.IO.Err, "usage error: %s\nusage: forward-1keyes plan|apply|status|report|changes [flags]  (--help lists the flags)\n", u.msg)
 		} else {
 			fmt.Fprintf(r.IO.Err, "error: %v\n", err)
 		}
@@ -227,6 +247,11 @@ func (r Runner) exec(verb string, o options) (int, error) {
 			return 0, usageError{"report needs --te-account-group and --network"}
 		}
 		return r.report(o)
+	case "changes":
+		if o.group == "" || o.network == "" {
+			return 0, usageError{"changes needs --te-account-group and --network"}
+		}
+		return r.changes(o)
 	default:
 		if o.network == "" {
 			return 0, usageError{"status needs --network"}
@@ -361,6 +386,82 @@ func (r Runner) report(o options) (int, error) {
 		printReport(r.IO.Out, rep)
 	}
 	return rep.ExitCode(), nil
+}
+
+func (r Runner) changes(o options) (int, error) {
+	// Everything the flags and the environment say is checked before anything is
+	// built or read.
+	ignored, err := ignoredSubnets(o)
+	if err != nil {
+		return 0, err
+	}
+	notifyURL := ""
+	if o.notify {
+		if notifyURL, err = ports.ValidateNotifyURL(r.Env("NOTIFY_URL")); err != nil {
+			return 0, fmt.Errorf("--notify needs NOTIFY_URL: %w", err)
+		}
+	}
+	cfg, err := r.config("changes", true, o)
+	if err != nil {
+		return 0, err
+	}
+	if o.notify {
+		cfg.NotifyURL, cfg.NotifySecret = notifyURL, r.Env("NOTIFY_SECRET")
+	}
+	deps, err := r.Build(cfg)
+	if err != nil {
+		return 0, err
+	}
+	ctx := context.Background()
+	result, err := usecases.Changes(ctx, usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, usecases.ChangesParams{
+		Since: o.since,
+		Plan: usecases.PlanParams{
+			AccountGroup: o.group, NetworkName: o.network, MaxFlows: 500, Persistent: true,
+			UpdateStrategy: "U1", ToolVersion: ToolVersion, ResolverSetting: cfg.ResolverSetting, IgnoreAgentSubnets: ignored,
+			Selection: domain.Selection{TestIDs: o.testIDs, IncludeLabels: o.includeLabels, ExcludeLabels: o.excludeLabels, IncludeNames: o.includeNames, ExcludeNames: o.excludeNames},
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	if o.asJSON {
+		raw, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return 0, err
+		}
+		fmt.Fprintln(r.IO.Out, string(raw))
+	} else {
+		printChanges(r.IO.Out, result)
+	}
+	if o.notify {
+		if err := usecases.Notify(ctx, deps.Notifier, result); err != nil {
+			return 0, fmt.Errorf("the notification was not delivered: %w", err)
+		}
+	}
+	return result.ExitCode(), nil
+}
+
+func printChanges(w io.Writer, c domain.Changes) {
+	if c.NothingToCompare {
+		fmt.Fprintf(w, "changes on %s: nothing to compare, snapshot %s is the only processed one\n", c.Network, c.To)
+	} else {
+		fmt.Fprintf(w, "changes on %s: snapshot %s -> %s\n", c.Network, c.From, c.To)
+		if len(c.Changes) == 0 {
+			fmt.Fprintln(w, "no change in any managed check")
+		}
+		orDash := func(s string) string {
+			if s == "" {
+				return "-"
+			}
+			return s
+		}
+		tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		for _, ch := range c.Changes {
+			fmt.Fprintf(tw, "%s\t%s -> %s\t%s\ttests %s\n", ch.Kind, orDash(ch.FromStatus), orDash(ch.ToStatus), ch.Name, orDash(strings.Join(ch.TestIDs, ",")))
+		}
+		_ = tw.Flush()
+	}
+	fmt.Fprintf(w, "plan now: %s\n", c.Plan)
 }
 
 func printReport(w io.Writer, rep domain.Report) {

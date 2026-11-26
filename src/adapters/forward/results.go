@@ -26,7 +26,8 @@ func (c *Client) CheckResults(ctx context.Context, snapshotID string) (map[strin
 		if err != nil {
 			return nil, fmt.Errorf("forward adapter: check %s: %w", ck.ID, err)
 		}
-		out[string(ck.ID)] = ports.CheckResult{Status: ck.Status, Outdated: ck.Outdated != nil && *ck.Outdated, Destination: destination}
+		out[string(ck.ID)] = ports.CheckResult{Status: ck.Status, Outdated: ck.Outdated != nil && *ck.Outdated, Destination: destination,
+			Name: ck.Name, Tags: ck.Tags}
 	}
 	return out, nil
 }

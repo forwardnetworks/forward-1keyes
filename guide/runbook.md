@@ -91,6 +91,64 @@ Exit status: **0** only when something was compared and every compared check is 
 any other result, including nothing to compare; **1** on an error. A result that cannot be read or
 decoded is an error, never "no data".
 
+## What changed since the last snapshot, and a notification
+
+    forward-1keyes changes --network "<Forward network>" --te-account-group "<account group>"
+
+`changes` only reads ThousandEyes and Forward. It compares your managed checks on the latest
+processed snapshot with the one before it, or with `--since <snapshot ID>`. Predictions and drafts
+are never compared. It takes the same selection, `--resolver` and `--ignore-agent-subnet` flags as
+`plan`, plus `--json`.
+
+![a blocked port, then its repair](images/cli-changes.png)
+
+| Change | Meaning |
+| :--- | :--- |
+| broke | PASS became FAIL |
+| recovered | FAIL became PASS |
+| added | only on the newer snapshot; its status is shown |
+| removed | only on the older snapshot. Deleting a check in Forward removes it from that snapshot on; older ones keep it |
+| changed | any other change of status |
+| unknown | a result is outdated on either side, so it is never called broke or recovered |
+
+Each change names the ThousandEyes tests behind the check, and the last line counts what `plan` would
+do now.
+
+### Notifications
+
+    NOTIFY_URL=https://... forward-1keyes changes ... --notify
+
+With `--notify`, one JSON message is posted when there is a change, or a create, update, stale or
+collision row. It has a `text` summary (so a chat incoming webhook can show it), `from`, `to`,
+`changes` and `plan`.
+
+- `NOTIFY_URL` comes from the environment only, must be https, and is treated as a secret: it is never
+  printed or logged, and a redirect is not followed. The notification carries no ThousandEyes or
+  Forward credential.
+- With `NOTIFY_SECRET` set, the header `X-1keyes-Signature: sha256=<hex>` is the HMAC-SHA256 of the
+  exact body. A receiver should compute it and compare before trusting a message.
+- A delivery that is not answered with 2xx makes the run exit 1. There is no retry.
+- Check names, test IDs and statuses go to whatever address you set. Choose it accordingly.
+
+### Running it
+
+It stores nothing and runs no server: run it from a timer, or from whatever handles a Forward webhook
+for a processed snapshot. To avoid repeats, and not to miss a change when several snapshots arrived,
+remember the `to` of the last run and pass it as `--since`:
+
+    last=$(cat last-snapshot 2>/dev/null)
+    forward-1keyes changes ... --json ${last:+--since "$last"} --notify > changes.json
+    status=$?
+    [ "$status" -ne 1 ] && jq -r .to changes.json > last-snapshot
+
+If no newer snapshot has arrived, `--since` equal to the latest is refused with exit 1; treat that as
+nothing new. A change that breaks and recovers between two runs does not show. A standing stale check
+is reported on every run until you delete it.
+
+Exit status: **0** when two snapshots were compared and there is nothing to tell; **2** when there is
+a change or waiting work, or only one snapshot; **1** on an error. A failed read is an error, never
+"no change", and nothing is sent.
+
 ## Removing or backing out
 
 The tool never deletes or deactivates a check, and its HTTP client refuses DELETE. To remove

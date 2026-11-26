@@ -38,6 +38,7 @@ Secrets come from the environment only. No flag takes a secret or a host.
     forward-1keyes apply --plan forward-1keyes.plan.json --digest sha256:<hex>
     forward-1keyes status --network "<Forward network>"
     forward-1keyes report --network "<Forward network>" --te-account-group "<account group>"
+    forward-1keyes changes --network "<Forward network>" --te-account-group "<account group>" [--notify]
 
 - `plan` only reads. It writes a plan file (mode 600) and prints its digest. Selection flags
   (`--test-id`, `--include-name`, `--exclude-label`, ...) narrow the tests; `--max-flows` caps the size.
@@ -45,6 +46,8 @@ Secrets come from the environment only. No flag takes a secret or a host.
   has changed since you approved it, and then writes in batches.
 - `report` only reads. It puts each check's latest ThousandEyes measurement beside its Forward status
   and says where to look first.
+- `changes` only reads. It lists the checks that broke or recovered since the previous snapshot, and
+  with `--notify` posts one signed message to the https URL in `NOTIFY_URL`.
 - `status` lists the checks the tool manages and flags any with a malformed ownership tag set.
 
 ## How checks are owned
