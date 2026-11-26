@@ -4,6 +4,7 @@
 | :--- | :--- |
 | [Operations runbook](runbook.md) | Installing, planning, approving, applying, checking and troubleshooting |
 | [Lab runbook](lab-runbook.md) | Building a real network with a ThousandEyes agent and collecting it into Forward |
+| [Webhooks](webhooks.md) | Notifications out, ThousandEyes alerts in, and what was captured |
 | [Use cases](use-cases.md) | What works today in both directions, and what could be built next, including webhooks |
 
 ## What it looks like

@@ -67,6 +67,11 @@ Follow the [runbook](runbook.md), adding `--ignore-agent-subnet 172.28.28.0/24` 
 network does not become a source. Then compare each test's loss or error in ThousandEyes with the
 check's status in Forward. A comparison table from this lab is on the [guide index](README.md).
 
+## Webhooks
+
+To try notifications and ThousandEyes alerts through a temporary public address, see
+[Webhooks](webhooks.md).
+
 ## Tear down
 
     sudo containerlab destroy -t lab/forward-1keyes.clab.yml

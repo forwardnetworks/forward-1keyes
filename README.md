@@ -13,8 +13,8 @@ Tests from ThousandEyes cloud agents are reported but not turned into checks yet
 ## Guide
 
 The [guide](guide/README.md) has screenshots from a real lab network, an
-[operations runbook](guide/runbook.md), a [lab runbook](guide/lab-runbook.md) and
-[use cases](guide/use-cases.md) in both directions.
+[operations runbook](guide/runbook.md), a [lab runbook](guide/lab-runbook.md),
+[webhooks](guide/webhooks.md) in both directions and [use cases](guide/use-cases.md).
 
 ![ThousandEyes tests as Forward intent checks](guide/images/forward-intent-checks.png)
 

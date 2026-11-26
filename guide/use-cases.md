@@ -36,24 +36,23 @@ Because the checks are ordinary Forward intent checks, a Forward change predicti
 checks should include them, so a change that would break a monitored flow shows before it is
 made. This has not been tried with checks this tool made.
 
-### 4. Alert enrichment by webhook — Proposed
+### 4. Alert enrichment by webhook — Proposed (the alert itself captured in the lab)
 
-ThousandEyes can POST a custom webhook when an alert triggers or clears, with a templated body.
-[Variables](https://docs.thousandeyes.com/product-documentation/integration-guides/custom-webhooks/webhook-vars.md)
-include the test id (`alert.test.id`), alert id and rule, and the trigger or clear type. Failed
-deliveries are retried
-([docs](https://docs.thousandeyes.com/product-documentation/integration-guides/custom-webhooks.md)).
+ThousandEyes can POST a custom webhook when an alert triggers or clears. In the lab one was set up by
+API and captured, trigger and clear: it carries the test id, the rule, the agent and the trigger or
+clear type, authenticates with a bearer token and sends no signature. See
+[Webhooks](webhooks.md#thousandeyes-alerts), including why a loss-based alert did not fire on a
+blocked port.
 
 A small receiver would:
 
-1. accept the POST and authenticate it;
+1. accept the POST and check its token;
 2. find the managed checks whose contributors include that test id;
 3. read their status on the latest snapshot, and for a FAIL the Forward path;
-4. post one answer to chat or a ticket: "the model also blocks this, at this hop" or "the model
-   allows this path; look beyond the network configuration".
+4. post one answer to chat or a ticket: "the model also blocks this" or "the model allows this path;
+   look beyond the network configuration" — the verdicts `report` already computes.
 
-It only reads Forward. To work it needs an HTTPS address ThousandEyes can reach. How a
-ThousandEyes webhook can authenticate itself to the receiver still has to be checked.
+It only needs to read Forward. It is not built.
 
 ## Forward to ThousandEyes
 
@@ -69,7 +68,8 @@ runs no server, so a timer, or whatever handles a Forward snapshot webhook, has 
 ThousandEyes tests behind each, and posts one signed message. In the lab, blocking a port produced
 one "broke" and removing the block one "recovered"; see the
 [runbook](runbook.md#what-changed-since-the-last-snapshot-and-a-notification). It was tested against
-a receiver on the same machine, not against a particular chat product.
+a capture receiver, including over public HTTPS ([Webhooks](webhooks.md)), not against a particular
+chat product.
 
 ### 7. Create ThousandEyes tests from Forward checks — Proposed
 
@@ -95,7 +95,7 @@ been tried. A comparison would flag where the measured path leaves the modelled 
 
 ## Suggested order
 
-1. Alert enrichment receiver (4): needs a reachable endpoint and an authentication decision. It can
+1. Alert enrichment receiver (4): needs a stable public address. It can
    answer with the verdict that `report` computes.
 2. Test creation (7): first feature that writes to ThousandEyes.
 3. Hop-by-hop path comparison (8).
