@@ -162,31 +162,34 @@ func NewRecording(in RecordingInput) (Recording, error) {
 	return rec, nil
 }
 
-// recordedTarget keeps a test's target without anything in it that could be a
-// credential: a web test's URL loses its user, query and fragment (only the
-// scheme, host and port are used), so the file holds no secret a test URL carried.
+// recordedTarget keeps a web test's target as scheme, host and port only: the
+// flow mapping reads nothing else, and a user, a token in the query or a secret
+// in the path would otherwise reach the file. Other test types keep their
+// target (a host name or an agent id).
 func recordedTarget(testType, target string) string {
 	if testType != "http-server" {
 		return target
 	}
 	u, err := url.Parse(target)
 	if err != nil {
-		// Unparseable: it cannot be mapped to a flow anyway, so keep no query,
-		// fragment or user.
+		// Unparseable: it cannot be mapped to a flow anyway, so keep what is
+		// before the first path, query or fragment, and no user.
 		if i := strings.IndexAny(target, "?#"); i >= 0 {
 			target = target[:i]
 		}
 		if s := strings.Index(target, "//"); s >= 0 {
-			if at := strings.LastIndex(target[s+2:], "@"); at >= 0 && !strings.Contains(target[s+2:s+2+at], "/") {
-				target = target[:s+2] + target[s+2+at+1:]
+			rest := target[s+2:]
+			if i := strings.Index(rest, "/"); i >= 0 {
+				rest = rest[:i]
 			}
+			if at := strings.LastIndex(rest, "@"); at >= 0 {
+				rest = rest[at+1:]
+			}
+			return target[:s+2] + rest
 		}
 		return target
 	}
-	if u.User == nil && u.RawQuery == "" && u.Fragment == "" && !u.ForceQuery {
-		return target
-	}
-	u.User, u.RawQuery, u.Fragment, u.ForceQuery = nil, "", "", false
+	u.User, u.Path, u.RawPath, u.RawQuery, u.Fragment, u.ForceQuery = nil, "", "", "", "", false
 	return u.String()
 }
 

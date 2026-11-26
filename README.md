@@ -68,8 +68,8 @@ Secrets come from the environment only. No flag takes a secret or a host.
 - `record` reads ThousandEyes (and resolves the test targets' names) and saves what the tool decoded to a
   file (mode 600, written only if every read succeeded; `--force` replaces an existing file). It does not
   contact Forward. The file holds test names, targets and internal addresses: treat it like the plan file.
-  A web test's URL is saved without its user, query and fragment, but **with its path**: a secret placed
-  in a URL path would be in the file.
+  A web test's URL is saved as scheme, host and port only (no user, path, query or fragment), which is all
+  the tool reads from it.
 - `--te-replay <file>` on `plan`, `apply`, `report` and `changes` uses that file as the only source of
   ThousandEyes data and name lookups: no token is read and nothing is resolved (`--resolver` is refused).
   The window is measured back from the time of the recording, not from now, and cannot be longer than the
