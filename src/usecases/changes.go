@@ -118,7 +118,10 @@ func Notify(ctx context.Context, n ports.Notifier, c domain.Changes) error {
 		To      string               `json:"to"`
 		Changes []domain.CheckChange `json:"changes"`
 		Plan    domain.PendingWork   `json:"plan"`
-	}{c.Summary(), c.From, c.To, c.Changes, c.Plan})
+		// Recording is present only for a replay, so a receiver can tell without
+		// reading the text.
+		Recording *domain.RecordingMark `json:"recording,omitempty"`
+	}{c.Summary(), c.From, c.To, c.Changes, c.Plan, c.Recording})
 	if err != nil {
 		return err
 	}

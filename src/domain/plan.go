@@ -72,6 +72,8 @@ type PlanInput struct {
 	// IgnoredAgentSubnets are the prefixes whose agent addresses were ignored,
 	// in the form CanonicalPrefixes gives.
 	IgnoredAgentSubnets []string
+	// Source is set only for a plan made from a recording.
+	Source *RecordingMark
 }
 
 // CanonicalPrefixes returns prefixes masked, ordered by address and then
@@ -110,6 +112,9 @@ type PlanBody struct {
 	Agents          []ObservedAgent  `json:"observed_agents"`
 	// IgnoredAgentSubnets are recorded so the digest covers them.
 	IgnoredAgentSubnets []string `json:"ignored_agent_subnets"`
+	// Source says the plan was made from a recording, and which. A plan made
+	// from live data has no such member, so its file and digest do not change.
+	Source *RecordingMark `json:"source,omitempty"`
 }
 
 // NewPlan builds a plan body: it counts the rows, applies the flow cap, and
@@ -223,7 +228,7 @@ func NewPlan(in PlanInput) (PlanBody, error) {
 		TE: in.TE, Forward: in.Forward, Persistent: in.Persistent, UpdateStrategy: in.UpdateStrategy,
 		MaxFlows: in.MaxFlows, Appliable: counts.Collision == 0 && !capExceeded, CapExceeded: capExceeded,
 		Rows: rows, Counts: counts, Observed: observed, Resolver: in.Resolver, Resolutions: resolutions, MappingSHA256: mapping,
-		Tests: tests, Agents: agents, IgnoredAgentSubnets: append([]string{}, in.IgnoredAgentSubnets...),
+		Tests: tests, Agents: agents, IgnoredAgentSubnets: append([]string{}, in.IgnoredAgentSubnets...), Source: in.Source,
 	}, nil
 }
 

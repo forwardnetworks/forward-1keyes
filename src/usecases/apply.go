@@ -25,6 +25,8 @@ type ApplyOptions struct {
 	Digest      string // --digest
 	ToolVersion string // the running tool's version
 	BatchSize   int    // default 25
+	// Replay is the recording --te-replay named, or nil.
+	Replay *domain.RecordingMark
 }
 
 // Difference is one way the world no longer matches the plan.
@@ -49,10 +51,11 @@ type RowResult struct {
 type ApplyReport struct {
 	Results     []RowResult
 	Differences []Difference
-	Warnings    []string            // what changed in ThousandEyes that does not stop the apply
-	Duplicates  map[string][]string // source key -> check IDs, when a key ends up held twice
-	Refusal     string              // why nothing was written, when ExitCode is 3
-	ExitCode    int                 // 0 all rows done, 1 any failed or skipped, 3 refused
+	Warnings    []string              // what changed in ThousandEyes that does not stop the apply
+	Duplicates  map[string][]string   // source key -> check IDs, when a key ends up held twice
+	Recording   *domain.RecordingMark `json:"recording,omitempty"` // set when the checks come from a recording
+	Refusal     string                // why nothing was written, when ExitCode is 3
+	ExitCode    int                   // 0 all rows done, 1 any failed or skipped, 3 refused
 }
 
 // ApplyDeps are the ports apply runs on. There is no resolver: apply uses the
@@ -91,6 +94,33 @@ func apply(ctx context.Context, fwd ports.ForwardClient, te ports.TeClient, raw 
 		return refuse(fmt.Sprintf("plan was made by tool version %q, this is %q", body.ToolVersion, opts.ToolVersion))
 	}
 
+	if why := sourceRefusal(body.Source, opts.Replay); why != "" {
+		return refuse(why)
+	}
+	rep := writePlan(ctx, fwd, te, body, opts)
+	rep.Recording = body.Source
+	return rep
+}
+
+// sourceRefusal says why a plan and the recording given to apply do not go
+// together: a plan made from a recording is applied only beside that file, and
+// a plan made from live data never beside one.
+func sourceRefusal(source, replay *domain.RecordingMark) string {
+	switch {
+	case source == nil && replay == nil:
+		return ""
+	case source == nil:
+		return "the plan was made from live ThousandEyes data: --te-replay is not allowed"
+	case replay == nil:
+		return "the plan was made from a recording (file sha256 " + source.SHA256 + "): apply needs --te-replay naming that file"
+	case source.SHA256 != replay.SHA256:
+		return "the plan was made from the recording with sha256 " + source.SHA256 + ", not the one given (" + replay.SHA256 + ")"
+	}
+	return ""
+}
+
+// writePlan is what apply does once the plan and its source are accepted.
+func writePlan(ctx context.Context, fwd ports.ForwardClient, te ports.TeClient, body domain.PlanBody, opts ApplyOptions) ApplyReport {
 	var warnings []string
 	if te != nil {
 		diffs, warns, err := teDrift(ctx, te, body)

@@ -149,6 +149,49 @@ Exit status: **0** when two snapshots were compared and there is nothing to tell
 a change or waiting work, or only one snapshot; **1** on an error. A failed read is an error, never
 "no change", and nothing is sent.
 
+## Record ThousandEyes data and replay it
+
+Use this when a demo has to work without ThousandEyes: the trial has ended, the lab agent is off, or
+there is no route to `api.thousandeyes.com`.
+
+    forward-1keyes record --te-account-group "<account group>" --out thousandeyes.rec.json
+
+![record](images/cli-record.png)
+
+`record` reads ThousandEyes and resolves the test targets' names. It does not contact Forward and
+needs no Forward variable. It saves what the tool decoded (never the API's responses, a token or a
+header), and a test URL loses its user, query and fragment. The file is mode 600 and is written only
+after every read succeeded, so a failed run leaves no file and an existing file untouched. Replacing
+one needs `--force`. On a filesystem that cannot make a hard link (some network mounts) use `--force`
+as well. Treat the file like the plan file: it holds test names, targets and internal addresses.
+
+Then add `--te-replay <file>` to `plan`, `apply`, `report` or `changes`:
+
+    forward-1keyes report --network "<Forward network>" --te-account-group "<account group>" \
+      --te-replay thousandeyes.rec.json
+
+![report from a recording](images/cli-replay-report.png)
+
+- **No ThousandEyes, no DNS.** `TE_API_TOKEN` is not read, no ThousandEyes client is built and nothing
+  is resolved; `--resolver` with `--te-replay` is refused. Forward is still read, and written by
+  `apply`, exactly as without it, so it must be reachable and hold a network that matches the
+  recorded addresses.
+- **Time is the recording's.** `--window` counts back from when the recording was made, never from
+  now, and a window longer than the recorded one is refused. Measurement times are shown as recorded.
+  Beside a newer snapshot a replay can show a disagreement that no longer means anything.
+- **It never looks live.** A line near the top of the plan, report and changes output, their JSON, the report file and the notification all say the data is a recording, with the
+  time and the file's SHA-256. This cannot be turned off.
+- **A plan remembers its source.** A plan made from a recording stores the file's SHA-256 and recording
+  time inside what its digest covers.
+
+![plan from a recording](images/cli-replay-plan.png)
+
+  `apply` then refuses the plan unless `--te-replay` names a file with that SHA-256, and refuses
+  `--te-replay` for a plan made from live data. A plan made from live data is unchanged.
+- **The file is untrusted input.** It is refused when it is over 64 MiB, has an unknown format,
+  version or field, has data after the JSON, holds a value the live reader would reject, or was made
+  for another account group.
+
 ## Removing or backing out
 
 The tool never deletes or deactivates a check, and its HTTP client refuses DELETE. To remove

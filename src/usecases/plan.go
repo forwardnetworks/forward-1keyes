@@ -32,6 +32,9 @@ type PlanParams struct {
 	// IgnoreAgentSubnets: an agent address inside one of these is not used to
 	// locate the agent. Test destinations are never filtered.
 	IgnoreAgentSubnets []netip.Prefix
+	// Source is set when the ThousandEyes data is a recording: the plan then
+	// carries it inside what its digest covers.
+	Source *domain.RecordingMark
 }
 
 const nameLimit = 255
@@ -92,13 +95,13 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 	var flows []domain.Flow
 	for _, t := range selected {
 		if !t.Enabled {
-			rows = append(rows, notImportableRow(t.Name, "disabled", "the test is disabled in ThousandEyes"))
+			rows = append(rows, notImportableRow(t.Name, "disabled", "the test is disabled in ThousandEyes", t.ID))
 			continue
 		}
 		if t.Type == "agent-to-agent" {
 			fs, why := agentToAgentFlows(inv, agents, reachable, emptied, t)
 			if why != "" {
-				rows = append(rows, notImportableRow(t.Name, "agent-to-agent", why))
+				rows = append(rows, notImportableRow(t.Name, "agent-to-agent", why, t.ID))
 				continue
 			}
 			flows = append(flows, fs...)
@@ -106,13 +109,13 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 		}
 		res := domain.MapFlows(t, pins)
 		if res.NotImportable != nil {
-			rows = append(rows, notImportableRow(t.Name, res.NotImportable.Kind, res.NotImportable.Reason))
+			rows = append(rows, notImportableRow(t.Name, res.NotImportable.Kind, res.NotImportable.Reason, t.ID))
 			continue
 		}
 		for _, c := range res.Candidates {
 			f, why := locateFlow(inv, reachable, emptied, t, c)
 			if why != "" {
-				rows = append(rows, notImportableRow(t.Name, "not located", why))
+				rows = append(rows, notImportableRow(t.Name, "not located", why, t.ID))
 				continue
 			}
 			flows = append(flows, f)
@@ -127,7 +130,11 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 	for _, pc := range domain.BuildPlannedChecks(flows) {
 		spec, err := domain.BuildCheck(pc, group.AID, nameLimit)
 		if err != nil {
-			rows = append(rows, notImportableRow(pc.Contributors[0].TestName, "cannot build the check", buildFailure(err, internetReason(ctx, deps.Forward, networkID))))
+			var behindIt []string
+			for _, ct := range pc.Contributors {
+				behindIt = append(behindIt, ct.TestID)
+			}
+			rows = append(rows, notImportableRow(pc.Contributors[0].TestName, "cannot build the check", buildFailure(err, internetReason(ctx, deps.Forward, networkID)), behindIt...))
 			continue
 		}
 		specs[pc.SourceKey] = spec
@@ -176,7 +183,7 @@ func Plan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBody, er
 		Persistent: p.Persistent, UpdateStrategy: p.UpdateStrategy, MaxFlows: p.MaxFlows, Rows: rows,
 		Observed: observedForPlan(checks, instance, desired), Resolver: setting, Resolutions: resolutions,
 		Tests: observedTests(selected), Agents: observedAgents(agents, usedAgents),
-		IgnoredAgentSubnets: domain.CanonicalPrefixes(p.IgnoreAgentSubnets),
+		IgnoredAgentSubnets: domain.CanonicalPrefixes(p.IgnoreAgentSubnets), Source: p.Source,
 	})
 }
 
@@ -415,8 +422,8 @@ func buildFailure(err error, internet string) string {
 	return err.Error()
 }
 
-func notImportableRow(name, kind, reason string) domain.Row {
-	return domain.Row{Outcome: domain.OutcomeNotImportable, Name: name, Reason: kind + ": " + reason}
+func notImportableRow(name, kind, reason string, testIDs ...string) domain.Row {
+	return domain.Row{Outcome: domain.OutcomeNotImportable, Name: name, Reason: kind + ": " + reason, UnimportableTestIDs: testIDs}
 }
 
 // changedFields names what differs between the check Forward holds and the

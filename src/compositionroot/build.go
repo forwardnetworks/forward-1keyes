@@ -12,8 +12,20 @@ import (
 	"github.com/forwardnetworks/forward-1keyes/src/adapters/dns"
 	"github.com/forwardnetworks/forward-1keyes/src/adapters/forward"
 	"github.com/forwardnetworks/forward-1keyes/src/adapters/notify"
+	"github.com/forwardnetworks/forward-1keyes/src/adapters/replay"
 	"github.com/forwardnetworks/forward-1keyes/src/adapters/thousandeyes"
 )
+
+// secrets is what must never appear in anything the tool prints.
+func (c Config) secrets() []string {
+	var out []string
+	for _, s := range []string{c.TEToken, c.ForwardPass, c.NotifySecret, c.NotifyURL, c.AlertToken} {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // BuildOptions are the seams tests use; production leaves them zero.
 type BuildOptions struct {
@@ -30,7 +42,7 @@ func DefaultBuild(cfg Config) (Deps, error) { return BuildWith(cfg, BuildOptions
 func BuildWith(cfg Config, opts BuildOptions) (Deps, error) {
 	mode := ModeForwardRead
 	switch cfg.Verb {
-	case "plan", "status", "report", "changes":
+	case "plan", "status", "report", "changes", "listen", "record":
 	case "apply":
 		mode = ModeForwardApply
 	default:
@@ -40,39 +52,43 @@ func BuildWith(cfg Config, opts BuildOptions) (Deps, error) {
 	if log == nil {
 		log = os.Stderr
 	}
-	var secrets []string
-	for _, s := range []string{cfg.TEToken, cfg.ForwardPass, cfg.NotifySecret, cfg.NotifyURL} {
-		if s != "" {
-			secrets = append(secrets, s)
-		}
-	}
+	secrets := cfg.secrets()
 	client := func(m Mode) *http.Client {
 		return &http.Client{Transport: NewTransport(TransportOptions{
 			Base: opts.BaseTransport, Mode: m, Log: log, Debug: cfg.Debug, Bodies: cfg.DebugBodies, Secrets: secrets,
 		})}
 	}
 
-	fwd, err := forward.New(forward.Config{BaseURL: cfg.ForwardURL, Username: cfg.ForwardUser, Password: cfg.ForwardPass, HTTPClient: client(mode)})
-	if err != nil {
-		return Deps{}, err
+	var deps Deps
+	if cfg.Verb != "record" { // record never contacts Forward
+		fwd, err := forward.New(forward.Config{BaseURL: cfg.ForwardURL, Username: cfg.ForwardUser, Password: cfg.ForwardPass, HTTPClient: client(mode)})
+		if err != nil {
+			return Deps{}, err
+		}
+		deps = Deps{Reader: fwd, Writer: fwd}
 	}
-	deps := Deps{Reader: fwd, Writer: fwd}
-	if cfg.NeedTE {
+	if cfg.Recording != nil {
+		// A replay: no ThousandEyes client, no resolver, no token.
+		source := replay.New(*cfg.Recording)
+		deps.TE, deps.Resolver = source, source
+	} else if cfg.NeedTE {
 		te, err := thousandeyes.New(thousandeyes.Config{Token: cfg.TEToken, HTTPClient: client(ModeThousandEyes)})
 		if err != nil {
 			return Deps{}, err
 		}
 		deps.TE = te
 	}
-	server := strings.TrimPrefix(cfg.ResolverSetting, "server:")
-	if cfg.ResolverSetting == "system" || cfg.ResolverSetting == "" {
-		server = ""
+	if cfg.Recording == nil {
+		server := strings.TrimPrefix(cfg.ResolverSetting, "server:")
+		if cfg.ResolverSetting == "system" || cfg.ResolverSetting == "" {
+			server = ""
+		}
+		resolver, err := dns.New(dns.Config{Server: server, Dial: opts.DNSDial})
+		if err != nil {
+			return Deps{}, err
+		}
+		deps.Resolver = resolver
 	}
-	resolver, err := dns.New(dns.Config{Server: server, Dial: opts.DNSDial})
-	if err != nil {
-		return Deps{}, err
-	}
-	deps.Resolver = resolver
 	if cfg.NotifyURL != "" {
 		// Its own client: one POST to one URL, with no service credential.
 		hc := &http.Client{Transport: NewTransport(TransportOptions{

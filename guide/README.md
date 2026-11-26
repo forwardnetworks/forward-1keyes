@@ -39,6 +39,21 @@ Account and test identifiers in the images are replaced with placeholders.
 
 ![changes](images/cli-changes.png)
 
+`record` saves what ThousandEyes said, so a demo works with the trial over, the agent off, or no
+route to ThousandEyes:
+
+![record](images/cli-record.png)
+
+`--te-replay` makes that file the only source of ThousandEyes data. Every output says it is a
+recording and when it was made, so a replay never looks live:
+
+![report from a recording](images/cli-replay-report.png)
+
+A plan made from a recording records the file's SHA-256 inside what its digest covers, and applies
+only with `--te-replay` naming the same file:
+
+![plan from a recording](images/cli-replay-plan.png)
+
 ## Proof from a real network
 
 From the [lab](lab-runbook.md): the same flows, measured by a ThousandEyes agent sending real

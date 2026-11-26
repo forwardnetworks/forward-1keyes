@@ -22,7 +22,7 @@ import os
 import sys
 import time
 
-LIMIT = 64 * 1024
+_LIMIT = 64 * 1024
 
 
 def main():
@@ -64,7 +64,7 @@ def main():
                 length = int(self.headers.get("Content-Length", "-1"))
             except ValueError:
                 length = -1
-            if length < 0 or length > LIMIT:
+            if length < 0 or length > _LIMIT:
                 return self.answer(413)
             body = self.rfile.read(length)
             expected = "sha256=" + hmac.new(signing, body, hashlib.sha256).hexdigest()

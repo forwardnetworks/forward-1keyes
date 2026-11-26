@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -35,7 +36,7 @@ type FS interface {
 // Config is what the adapters are built from. It is read from the environment,
 // never from flags.
 type Config struct {
-	Verb            string // "plan", "apply", "status", "report" or "changes"
+	Verb            string // "plan", "apply", "status", "report", "changes", "listen" or "record"
 	ToolVersion     string
 	NeedTE          bool // false for status and apply: no ThousandEyes token is read
 	TEToken         string
@@ -45,8 +46,12 @@ type Config struct {
 	ResolverSetting string // "system" or "server:<ip:port>"
 	Debug           bool
 	DebugBodies     bool
-	NotifyURL       string // set only for changes --notify; a secret
+	NotifyURL       string // set for changes --notify and listen; a secret
 	NotifySecret    string // signs notifications when set
+	AlertToken      string // set only for listen; a secret
+	// Recording, when set, is the only source of ThousandEyes data and of
+	// hostname lookups: no ThousandEyes client and no resolver is built.
+	Recording *domain.Recording
 }
 
 // Deps are the ports the use cases run on.
@@ -66,6 +71,14 @@ const ToolVersion = "0.1.0"
 
 const defaultPlanFile = "forward-1keyes.plan.json"
 
+// defaultListenAddress is loopback only; --address overrides it.
+const (
+	listenHost = "127.0.0.1"
+	listenPort = "8644"
+)
+
+var defaultListenAddress = net.JoinHostPort(listenHost, listenPort)
+
 // Runner runs one command line.
 type Runner struct {
 	Env   func(string) string
@@ -73,6 +86,8 @@ type Runner struct {
 	FS    FS
 	Now   func() time.Time
 	Build Build
+	// Listen holds the seams of the listen verb; production leaves them zero.
+	Listen ListenHooks
 }
 
 type usageError struct{ msg string }
@@ -84,8 +99,10 @@ type options struct {
 	group, network, out, resolver, planFile, digest, results, snapshot string
 	maxFlows, batchSize                                                int
 	window                                                             time.Duration
-	since                                                              string
+	since, address                                                     string
 	notify                                                             bool
+	replay, recordOut                                                  string
+	force, windowSet                                                   bool
 	// Each verb's defaults are written here when its flags are registered, so
 	// a flag whose default differs between verbs needs its own field.
 	reportOut                                                         string
@@ -99,16 +116,36 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.BoolVar(&o.debug, "debug", false, "log method, path, status and duration of each call")
 		fs.BoolVar(&o.debugBodies, "debug-bodies", false, "also log request and response bodies, redacted")
 	}
-	selection := func() {
+	replay := func() {
+		fs.StringVar(&o.replay, "te-replay", "", "use this recording (made by record) as the only source of ThousandEyes data and hostname lookups")
+	}
+	filters := func() {
 		fs.StringVar(&o.resolver, "resolver", "", "DNS server as ip:port (default: the system resolver)")
 		fs.StringArrayVar(&o.testIDs, "test-id", nil, "select only this test ID (repeatable)")
 		fs.StringArrayVar(&o.includeLabels, "include-label", nil, "select only tests with this label (repeatable)")
 		fs.StringArrayVar(&o.excludeLabels, "exclude-label", nil, "skip tests with this label (repeatable)")
 		fs.StringArrayVar(&o.includeNames, "include-name", nil, "select only tests whose name matches this regexp (repeatable)")
 		fs.StringArrayVar(&o.excludeNames, "exclude-name", nil, "skip tests whose name matches this regexp (repeatable)")
+	}
+	selection := func() {
+		filters()
 		fs.StringArrayVar(&o.ignoreAgentSubnets, "ignore-agent-subnet", nil, "ignore agent addresses in this CIDR, for example a management subnet (repeatable)")
 	}
 	switch verb {
+	case "record":
+		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
+		fs.StringVar(&o.recordOut, "out", "", "where to write the recording (required)")
+		fs.BoolVar(&o.force, "force", false, "replace the file when it exists")
+		fs.DurationVar(&o.window, "window", time.Hour, "how far back to read measurements")
+		filters()
+		debug()
+	case "listen":
+		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
+		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
+		fs.StringVar(&o.address, "address", defaultListenAddress, "loopback ip:port to listen on, in plain HTTP")
+		fs.DurationVar(&o.window, "window", time.Hour, "how far back to read measurements")
+		selection()
+		debug()
 	case "changes":
 		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
 		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
@@ -116,6 +153,7 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.BoolVar(&o.notify, "notify", false, "POST a message to NOTIFY_URL when there is something to tell")
 		fs.BoolVar(&o.asJSON, "json", false, "print JSON instead of a table")
 		selection()
+		replay()
 		debug()
 	case "report":
 		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
@@ -124,6 +162,7 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.StringVar(&o.reportOut, "out", "", "also write the report to this file as JSON")
 		fs.BoolVar(&o.asJSON, "json", false, "print JSON instead of a table")
 		selection()
+		replay()
 		debug()
 	case "plan":
 		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")
@@ -133,6 +172,7 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.IntVar(&o.maxFlows, "max-flows", 500, "flow cap")
 		fs.BoolVar(&o.nonPersistent, "non-persistent", false, "plan non-persistent checks (this snapshot only)")
 		selection()
+		replay()
 		debug()
 	case "apply":
 		fs.StringVar(&o.planFile, "plan", "", "the plan file (required)")
@@ -140,6 +180,7 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.IntVar(&o.batchSize, "batch-size", 25, "rows written per batch")
 		fs.StringVar(&o.results, "results", "", "also write the results to this file as JSON")
 		fs.BoolVar(&o.asJSON, "json", false, "print the results as JSON")
+		replay()
 		debug()
 	case "status":
 		fs.StringVar(&o.network, "network", "", "Forward network name (required)")
@@ -160,6 +201,8 @@ func FlagNames(verb string) []string {
 }
 
 var verbHelp = map[string]string{
+	"record":  "save what ThousandEyes says, and the hostname lookups, to a file for --te-replay; does not contact Forward",
+	"listen":  "answer ThousandEyes alerts with what Forward models; reads only, sends notifications",
 	"changes": "compare checks on two snapshots and count pending work; reads only, can notify",
 	"report":  "compare what ThousandEyes measured with what Forward concluded; reads only",
 	"plan":    "read ThousandEyes and Forward and write a plan; changes nothing",
@@ -182,7 +225,7 @@ func (r Runner) command(code *int) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(*cobra.Command, []string) error {
-			return usageError{"a verb is required: plan, apply, status, report or changes"}
+			return usageError{"a verb is required: plan, apply, status, report, changes, listen or record"}
 		},
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -190,13 +233,14 @@ func (r Runner) command(code *int) *cobra.Command {
 	root.SetErr(r.IO.Err)
 	root.SetFlagErrorFunc(flagErr)
 	var o options
-	for _, verb := range []string{"plan", "apply", "status", "report", "changes"} {
+	for _, verb := range []string{"plan", "apply", "status", "report", "changes", "listen", "record"} {
 		verb := verb
 		sub := &cobra.Command{
 			Use:   verb,
 			Short: verbHelp[verb],
 			Args:  cobra.NoArgs,
-			RunE: func(*cobra.Command, []string) error {
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				o.windowSet = cmd.Flags().Changed("window")
 				c, err := r.exec(verb, o)
 				*code = c
 				return err
@@ -221,7 +265,7 @@ func (r Runner) Run(args []string) int {
 	if err := root.Execute(); err != nil {
 		var u usageError
 		if errors.As(err, &u) {
-			fmt.Fprintf(r.IO.Err, "usage error: %s\nusage: forward-1keyes plan|apply|status|report|changes [flags]  (--help lists the flags)\n", u.msg)
+			fmt.Fprintf(r.IO.Err, "usage error: %s\nusage: forward-1keyes plan|apply|status|report|changes|listen|record [flags]  (--help lists the flags)\n", u.msg)
 		} else {
 			fmt.Fprintf(r.IO.Err, "error: %v\n", err)
 		}
@@ -252,6 +296,16 @@ func (r Runner) exec(verb string, o options) (int, error) {
 			return 0, usageError{"changes needs --te-account-group and --network"}
 		}
 		return r.changes(o)
+	case "listen":
+		if o.group == "" || o.network == "" {
+			return 0, usageError{"listen needs --te-account-group and --network"}
+		}
+		return r.listen(o)
+	case "record":
+		if o.group == "" || o.recordOut == "" {
+			return 0, usageError{"record needs --te-account-group and --out"}
+		}
+		return r.record(o)
 	default:
 		if o.network == "" {
 			return 0, usageError{"status needs --network"}
@@ -263,13 +317,15 @@ func (r Runner) exec(verb string, o options) (int, error) {
 // config reads the environment. Secrets come only from here, never from flags.
 func (r Runner) config(verb string, needTE bool, o options) (Config, error) {
 	cfg := Config{Verb: verb, ToolVersion: ToolVersion, NeedTE: needTE, Debug: o.debug, DebugBodies: o.debugBodies, ResolverSetting: "system"}
-	url, err := ports.ValidateForwardURL(r.Env("FWD_URL"))
-	if err != nil {
-		return cfg, fmt.Errorf("FWD_URL: %w", err)
-	}
-	cfg.ForwardURL, cfg.ForwardUser, cfg.ForwardPass = url, r.Env("FWD_USER"), r.Env("FWD_PASS")
-	if cfg.ForwardUser == "" || len(cfg.ForwardPass) < ports.MinSecretLength {
-		return cfg, fmt.Errorf("FWD_USER and FWD_PASS must be set (the password at least %d characters)", ports.MinSecretLength)
+	if verb != "record" { // record never contacts Forward
+		url, err := ports.ValidateForwardURL(r.Env("FWD_URL"))
+		if err != nil {
+			return cfg, fmt.Errorf("FWD_URL: %w", err)
+		}
+		cfg.ForwardURL, cfg.ForwardUser, cfg.ForwardPass = url, r.Env("FWD_USER"), r.Env("FWD_PASS")
+		if cfg.ForwardUser == "" || len(cfg.ForwardPass) < ports.MinSecretLength {
+			return cfg, fmt.Errorf("FWD_USER and FWD_PASS must be set (the password at least %d characters)", ports.MinSecretLength)
+		}
 	}
 	if needTE {
 		if cfg.TEToken = r.Env("TE_API_TOKEN"); len(cfg.TEToken) < ports.MinSecretLength {
@@ -295,10 +351,15 @@ func (r Runner) plan(o options) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	cfg, err := r.config("plan", true, o)
+	rp, err := r.loadReplay(o, o.group)
 	if err != nil {
 		return 0, err
 	}
+	cfg, err := r.config("plan", rp == nil, o)
+	if err != nil {
+		return 0, err
+	}
+	rp.wire(&cfg)
 	deps, err := r.Build(cfg)
 	if err != nil {
 		return 0, err
@@ -306,8 +367,8 @@ func (r Runner) plan(o options) (int, error) {
 	body, err := usecases.Plan(context.Background(), usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, usecases.PlanParams{
 		AccountGroup: o.group, NetworkName: o.network, MaxFlows: o.maxFlows, Persistent: !o.nonPersistent,
 		UpdateStrategy: "U1", ToolVersion: ToolVersion, ResolverSetting: cfg.ResolverSetting,
-		IgnoreAgentSubnets: ignored,
-		Selection:          domain.Selection{TestIDs: o.testIDs, IncludeLabels: o.includeLabels, ExcludeLabels: o.excludeLabels, IncludeNames: o.includeNames, ExcludeNames: o.excludeNames},
+		IgnoreAgentSubnets: ignored, Source: rp.markOrNil(),
+		Selection: domain.Selection{TestIDs: o.testIDs, IncludeLabels: o.includeLabels, ExcludeLabels: o.excludeLabels, IncludeNames: o.includeNames, ExcludeNames: o.excludeNames},
 	})
 	if err != nil {
 		return 0, err
@@ -352,16 +413,25 @@ func (r Runner) report(o options) (int, error) {
 	if o.window < time.Second {
 		return 0, usageError{"--window must be at least one second"}
 	}
-	cfg, err := r.config("report", true, o)
+	rp, err := r.loadReplay(o, o.group)
 	if err != nil {
 		return 0, err
 	}
+	window, err := rp.window(o)
+	if err != nil {
+		return 0, err
+	}
+	cfg, err := r.config("report", rp == nil, o)
+	if err != nil {
+		return 0, err
+	}
+	rp.wire(&cfg)
 	deps, err := r.Build(cfg)
 	if err != nil {
 		return 0, err
 	}
 	rep, err := usecases.Report(context.Background(), usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, usecases.ReportParams{
-		Window: o.window,
+		Window: window,
 		Plan: usecases.PlanParams{
 			AccountGroup: o.group, NetworkName: o.network, MaxFlows: 500, Persistent: true,
 			UpdateStrategy: "U1", ToolVersion: ToolVersion, ResolverSetting: cfg.ResolverSetting, IgnoreAgentSubnets: ignored,
@@ -371,6 +441,7 @@ func (r Runner) report(o options) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	rep.Recording = rp.markOrNil()
 	raw, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
 		return 0, err
@@ -401,10 +472,15 @@ func (r Runner) changes(o options) (int, error) {
 			return 0, fmt.Errorf("--notify needs NOTIFY_URL: %w", err)
 		}
 	}
-	cfg, err := r.config("changes", true, o)
+	rp, err := r.loadReplay(o, o.group)
 	if err != nil {
 		return 0, err
 	}
+	cfg, err := r.config("changes", rp == nil, o)
+	if err != nil {
+		return 0, err
+	}
+	rp.wire(&cfg)
 	if o.notify {
 		cfg.NotifyURL, cfg.NotifySecret = notifyURL, r.Env("NOTIFY_SECRET")
 	}
@@ -424,6 +500,7 @@ func (r Runner) changes(o options) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	result.Recording = rp.markOrNil()
 	if o.asJSON {
 		raw, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -442,6 +519,9 @@ func (r Runner) changes(o options) (int, error) {
 }
 
 func printChanges(w io.Writer, c domain.Changes) {
+	if c.Recording != nil {
+		fmt.Fprintln(w, c.Recording.Line())
+	}
 	if c.NothingToCompare {
 		fmt.Fprintf(w, "changes on %s: nothing to compare, snapshot %s is the only processed one\n", c.Network, c.To)
 	} else {
@@ -466,6 +546,9 @@ func printChanges(w io.Writer, c domain.Changes) {
 
 func printReport(w io.Writer, rep domain.Report) {
 	fmt.Fprintf(w, "report on snapshot %s: measured by ThousandEyes beside modelled by Forward\n", rep.SnapshotID)
+	if rep.Recording != nil {
+		fmt.Fprintln(w, rep.Recording.Line())
+	}
 	for _, row := range rep.Rows {
 		if !row.Compared {
 			fmt.Fprintf(w, "\nnot compared  %s\n    %s\n", row.Name, row.Reason)
@@ -488,6 +571,9 @@ func printReport(w io.Writer, rep domain.Report) {
 
 func printPlan(w io.Writer, b domain.PlanBody, out, digest string) {
 	fmt.Fprintf(w, "plan for %s (aid %s) on %s, snapshot %s: written to %s\n", b.TE.AccountGroupName, b.TE.AID, b.Forward.NetworkName, b.Forward.SnapshotID, out)
+	if b.Source != nil {
+		fmt.Fprintln(w, b.Source.Line())
+	}
 	c := b.Counts
 	fmt.Fprintf(w, "create %d  update %d  unchanged %d  stale %d  collision %d  not importable %d  (cap %d, appliable %v)\n",
 		c.Create, c.Update, c.Unchanged, c.Stale, c.Collision, c.NotImportable, b.MaxFlows, b.Appliable)
@@ -505,10 +591,15 @@ func printPlan(w io.Writer, b domain.PlanBody, out, digest string) {
 }
 
 func (r Runner) apply(o options) (int, error) {
-	cfg, err := r.config("apply", true, o)
+	rp, err := r.loadReplay(o, "")
 	if err != nil {
 		return 0, err
 	}
+	cfg, err := r.config("apply", rp == nil, o)
+	if err != nil {
+		return 0, err
+	}
+	rp.wire(&cfg)
 	raw, err := r.FS.ReadFile(o.planFile)
 	if err != nil {
 		return 0, fmt.Errorf("reading the plan: %w", err)
@@ -517,7 +608,7 @@ func (r Runner) apply(o options) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	rep := usecases.ApplyWithTE(context.Background(), usecases.ApplyDeps{Forward: deps.Writer, TE: deps.TE}, raw, usecases.ApplyOptions{Digest: o.digest, ToolVersion: ToolVersion, BatchSize: o.batchSize})
+	rep := usecases.ApplyWithTE(context.Background(), usecases.ApplyDeps{Forward: deps.Writer, TE: deps.TE}, raw, usecases.ApplyOptions{Digest: o.digest, ToolVersion: ToolVersion, BatchSize: o.batchSize, Replay: rp.markOrNil()})
 	out, _ := json.MarshalIndent(rep, "", "  ")
 	if o.results != "" {
 		if err := r.FS.WriteFile(o.results, append(out, '\n')); err != nil {
@@ -527,6 +618,13 @@ func (r Runner) apply(o options) (int, error) {
 	if o.asJSON {
 		fmt.Fprintln(r.IO.Out, string(out))
 		return rep.ExitCode, nil
+	}
+	if rep.Recording != nil {
+		if rep.Refusal == "" {
+			fmt.Fprintf(r.IO.Out, "writing checks from recorded data: %s\n", rep.Recording.Line())
+		} else {
+			fmt.Fprintln(r.IO.Out, rep.Recording.Line())
+		}
 	}
 	if rep.Refusal != "" {
 		fmt.Fprintf(r.IO.Out, "refused: %s\n", rep.Refusal)

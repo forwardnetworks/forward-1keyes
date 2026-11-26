@@ -78,15 +78,16 @@ func mapHTTPServer(t TestConfig, pins map[string][]netip.Addr) FlowResult {
 		return notImportable(kindProxyConfigured, "the test goes through a proxy")
 	}
 	u, err := url.Parse(t.Target)
+	shown := recordedTarget(t.Type, t.Target) // a reason is printed: no user, query or fragment
 	if err != nil || u.Hostname() == "" {
-		return notImportable(kindInvalidTarget, "cannot read a host from "+t.Target)
+		return notImportable(kindInvalidTarget, "cannot read a host from "+shown)
 	}
 	var port int
 	switch {
 	case u.Port() != "":
 		p, err := strconv.Atoi(u.Port())
 		if err != nil || p < 1 || p > 65535 {
-			return notImportable(kindInvalidTarget, "invalid port in "+t.Target)
+			return notImportable(kindInvalidTarget, "invalid port in "+shown)
 		}
 		port = p
 	case u.Scheme == "https":
@@ -94,7 +95,7 @@ func mapHTTPServer(t TestConfig, pins map[string][]netip.Addr) FlowResult {
 	case u.Scheme == "http":
 		port = 80
 	default:
-		return notImportable(kindInvalidTarget, "unsupported scheme in "+t.Target)
+		return notImportable(kindInvalidTarget, "unsupported scheme in "+shown)
 	}
 	return candidates(t, u.Hostname(), "tcp", &port, pins)
 }

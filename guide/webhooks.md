@@ -6,7 +6,7 @@ capture receiver (`../lab/webhook/capture.py`).
 | Direction | What | State |
 | :--- | :--- | :--- |
 | forward-1keyes to you | `changes --notify` posts what flipped between two snapshots | Built; delivered over public HTTPS with a valid signature |
-| ThousandEyes to you | an alert posts to a webhook | Set up by API and captured, trigger and clear; **forward-1keyes does not receive it yet** |
+| ThousandEyes to you | an alert posts to a webhook | Set up by API and captured, trigger and clear; answered by `forward-1keyes listen` (below) |
 
 ![a ThousandEyes alert as it arrived](images/te-webhook.png)
 
@@ -96,14 +96,82 @@ The first rule tried was a network rule, `((loss >= 50%))`, on the TCP test to t
 the same port with `((probDetail != ""))` alerted at its first round. If you rely on alerts for
 blocked paths, check that your rules fire on errors and not only on loss.
 
-## What a receiver would still need
+## Answering an alert: `listen`
 
-A receiver that turns an alert into "does the network model allow this flow?" is not built. From
-what was captured it would have to:
+`forward-1keyes listen` receives the alert and answers the question "is the network meant to allow
+that flow?" from Forward's model. It is read-only: the only thing it sends is one signed message per
+alert to `NOTIFY_URL`.
 
-- require HTTPS on a stable address, and compare the bearer token in constant time before reading
-  anything else;
-- accept the body whatever content type it is labelled with, limit its size, and treat every field as
-  untrusted;
-- use only the test id to look up managed checks, then read their status and path from Forward;
-- cope with the same alert arriving more than once, since ThousandEyes retries failed deliveries.
+    ALERT_TOKEN="$(cat bearer.secret)" NOTIFY_URL="https://<where to send answers>/hook/<secret>" \
+    NOTIFY_SECRET="$(cat sign.secret)" \
+    forward-1keyes listen --network "<Forward network>" --te-account-group "<account group>"
+
+- **Plain HTTP on loopback only.** `--address` is an `ip:port` (default `127.0.0.1:8644`) and must be a
+  loopback address. There is no TLS in the tool: public HTTPS in front of it (a tunnel or a reverse
+  proxy) is yours, as in the capture above.
+- **Three environment variables, no secret flags.** `ALERT_TOKEN` is the bearer token ThousandEyes
+  sends: at least 32 characters, and different from `TE_API_TOKEN`, `FWD_PASS`, `NOTIFY_SECRET` and
+  `NOTIFY_URL`, because ThousandEyes stores it. `NOTIFY_URL` and `NOTIFY_SECRET` are as in `changes`.
+- **One path.** `POST /thousandeyes/alerts`. The token is checked first (401), then the path (404),
+  the method (405) and the size (413, over 64 KiB). The content type is not checked, because
+  ThousandEyes labels the JSON `text/plain`.
+- **Three fields are used:** `testId`, `alertId` and `notificationType` (`"2"` triggered, `"1"`
+  cleared). The template above already carries them; everything else is ignored.
+- **It answers first and works after.** A new alert gets 202 and goes in a queue of 16, worked one at a
+  time; a repeat of an alert it has seen in the last three hours gets 200 and is not queued; a full
+  queue gets 503 so ThousandEyes retries. Each alert has five minutes of work.
+- **The answer is `report`, judged on the alerted test alone.** It says the measurement works and the
+  model allows the flow only when every row for that test was compared and is healthy. Otherwise it
+  names each row that is not, with the reason, and when there is no row for the test it says so.
+  It never answers with silence or false comfort.
+- **On interrupt** it accepts nothing new, gives the alert in work up to 30 seconds, prints the alert
+  IDs it accepted and did not answer, and exits 0.
+
+State: built, tested against a fake ThousandEyes and a fake Forward,
+and run twice against a live ThousandEyes alert in the lab (2026-11-26): a real HTTP test failing, an
+alert rule with a webhook, a quick tunnel to the listener, and a second tunnel to the capture
+receiver standing in for `NOTIFY_URL`. `listen` does not take `--te-replay`.
+
+![listen answering a live alert](images/cli-listen.png)
+
+The message the receiver captured: the signature was valid and no bearer token was in it. The alert
+was received at 14:26:11, the measurement it was judged on was taken at 14:25:06, and the whole
+answer arrived in about four seconds.
+
+![what the receiver captured](images/webhook-listen-received.png)
+
+A second run the same day captured the clear and a retry; see below. Read the two rows: from the branch (10.20.1.0/24) the model allows the flow, so the failure is
+somewhere the model cannot see (the service, the circuit, live device state). From the management
+subnet (172.28.28.0/24) the model blocks it, which is the known management-address row, not the
+cause.
+### A clear, and a retry
+
+A second run on the same day, with the listener started on purpose **after** the alert fired:
+
+![a triggered and a cleared alert](images/cli-listen-cleared.png)
+
+- **Retry.** The alert started at 14:50:00 while nothing listened, so the tunnel could not deliver
+  it. The listener was started at 14:51:27 and received the same alert id at 14:51:47. This fits
+  ThousandEyes retrying a failed delivery: the first run's alert arrived about 11 seconds after its
+  round, this one 107 seconds. The failed first attempt itself was not seen, so this is consistent
+  with a retry and not proof of the retry schedule.
+- **Clear.** The ACL line on the lab's dc-rtr that blocked port 80 (the live reason this test was
+  failing) was removed at 14:52:10, and the cleared alert arrived at 14:56:16. The answer says the
+  alert cleared but not every check is healthy, and names only the row that is not: the management
+  subnet, which the model blocks although traffic works. The healthy branch row is not listed.
+- **What the first alert says about the model.** The Forward snapshot dates from 01:38, before the
+  port 80 block was added to the live device, so from the branch the model "allows" a flow that was
+  failing. The answer's advice for that row, "look at ... live device state or an old snapshot", was
+  the right one. It is the kind of disagreement the listener exists to surface.
+
+Through the public address, a request without the token was answered 401, and the alert with the token was accepted and answered.
+Afterwards the alert rule, the webhook operation and the connector were deleted (each read back as
+404), both tunnels and the listener were stopped, and the public addresses answered 530. The second
+run was torn down the same way.
+
+## What a receiver needs
+
+What `listen` does follows from what was captured: HTTPS on a stable address in front of it, the
+bearer token compared in constant time before anything else, the body accepted whatever its content
+type, limited in size, every field untrusted, the test id used to look up managed checks and their
+status in Forward, and repeated deliveries tolerated, since ThousandEyes retries.

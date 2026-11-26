@@ -133,6 +133,8 @@ type ReportRow struct {
 type Report struct {
 	SnapshotID string      `json:"snapshot_id"`
 	Rows       []ReportRow `json:"rows"`
+	// Recording is set when the ThousandEyes data came from a recording.
+	Recording *RecordingMark `json:"recording,omitempty"`
 }
 
 // ExitCode is 0 only when at least one check was compared and every compared

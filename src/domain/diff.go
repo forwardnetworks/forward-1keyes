@@ -63,6 +63,9 @@ type Row struct {
 	AgentIDs []string `json:"agent_ids"`
 	// Notes link rows that belong together, for example a create that replaces a stale check.
 	Notes []string `json:"notes"`
+	// UnimportableTestIDs are the tests behind a not-importable row. They are
+	// not part of the plan file or its digest.
+	UnimportableTestIDs []string `json:"-"`
 }
 
 // DiffResult is the rows, plus the IDs of our inactive checks, which are

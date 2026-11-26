@@ -52,6 +52,8 @@ type Changes struct {
 	NothingToCompare bool          `json:"nothing_to_compare"`
 	Changes          []CheckChange `json:"changes"`
 	Plan             PendingWork   `json:"plan"`
+	// Recording is set when the ThousandEyes data came from a recording.
+	Recording *RecordingMark `json:"recording,omitempty"`
 }
 
 // Reportable says whether there is something to tell: a change or waiting work.
@@ -71,6 +73,9 @@ const messageLines = 20
 // Summary is the text of a notification: short enough for a chat message.
 func (c Changes) Summary() string {
 	var b strings.Builder
+	if c.Recording != nil {
+		fmt.Fprintf(&b, "%s\n", c.Recording.Line())
+	}
 	if c.NothingToCompare {
 		fmt.Fprintf(&b, "forward-1keyes on %s: only snapshot %s is processed, nothing to compare.", c.Network, c.To)
 	} else {

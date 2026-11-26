@@ -50,6 +50,9 @@ Secrets come from the environment only. No flag takes a secret or a host.
     forward-1keyes status --network "<Forward network>"
     forward-1keyes report --network "<Forward network>" --te-account-group "<account group>"
     forward-1keyes changes --network "<Forward network>" --te-account-group "<account group>" [--notify]
+    forward-1keyes listen --network "<Forward network>" --te-account-group "<account group>"
+    forward-1keyes record --te-account-group "<account group>" --out thousandeyes.rec.json [--window 1h] [--force]
+    forward-1keyes report --network "<Forward network>" --te-account-group "<account group>" --te-replay thousandeyes.rec.json
 
 - `plan` only reads. It writes a plan file (mode 600) and prints its digest. Selection flags
   (`--test-id`, `--include-name`, `--exclude-label`, ...) narrow the tests; `--max-flows` caps the size.
@@ -59,6 +62,21 @@ Secrets come from the environment only. No flag takes a secret or a host.
   and says where to look first.
 - `changes` only reads. It lists the checks that broke or recovered since the previous snapshot, and
   with `--notify` posts one signed message to the https URL in `NOTIFY_URL`.
+- `listen` receives a ThousandEyes alert webhook on loopback (put HTTPS in front of it) and answers with
+  what Forward models for the alerted test: one signed message per alert to `NOTIFY_URL`. It needs
+  `ALERT_TOKEN` (at least 32 characters) and only reads. See [webhooks](guide/webhooks.md).
+- `record` reads ThousandEyes (and resolves the test targets' names) and saves what the tool decoded to a
+  file (mode 600, written only if every read succeeded; `--force` replaces an existing file). It does not
+  contact Forward. The file holds test names, targets and internal addresses: treat it like the plan file.
+  A web test's URL is saved without its user, query and fragment, but **with its path**: a secret placed
+  in a URL path would be in the file.
+- `--te-replay <file>` on `plan`, `apply`, `report` and `changes` uses that file as the only source of
+  ThousandEyes data and name lookups: no token is read and nothing is resolved (`--resolver` is refused).
+  The window is measured back from the time of the recording, not from now, and cannot be longer than the
+  recorded one. Every output says the data is a recording and when it was made. A plan made from a
+  recording applies only with `--te-replay` naming the same file, and a plan made from live data refuses
+  `--te-replay`. A recording made for another account group is refused. Forward is still read (and written by
+  `apply`) as without it, so it must be reachable and hold a network that matches the recorded addresses.
 - `status` lists the checks the tool manages and flags any with a malformed ownership tag set.
 
 ## How checks are owned

@@ -39,15 +39,15 @@ func Redact(s string, secrets []string) string {
 	return s
 }
 
-// ErrBadNotifyURL is returned for a NOTIFY_URL that cannot be used. It never
+// errBadNotifyURL is returned for a NOTIFY_URL that cannot be used. It never
 // carries the value.
-var ErrBadNotifyURL = errors.New("domain: it must be an https URL with a host and no user information")
+var errBadNotifyURL = errors.New("domain: it must be an https URL with a host and no user information")
 
 // ValidateNotifyURL checks NOTIFY_URL and returns it as it will be requested.
 func ValidateNotifyURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
-		return "", ErrBadNotifyURL
+		return "", errBadNotifyURL
 	}
 	return u.String(), nil
 }
