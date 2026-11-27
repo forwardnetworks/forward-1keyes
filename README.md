@@ -93,6 +93,9 @@ client.
 - A location filter takes one value, so a destination with several addresses, or an agent in
   several prefixes, becomes one check per address and per prefix. Such a check's key carries the
   destination address; every other key is unchanged.
+- If two checks would still end up with one key (a reverse-direction agent-to-agent test with
+  senders in different subnets), each of their keys carries its destination too. Gaining or losing
+  such a sender replaces the earlier check: `plan` shows it `stale` and creates new ones.
 - Forward's model has connected subnets, not end hosts, so a destination is located by subnet.
 - An agent's every modelled address becomes a source. `--ignore-agent-subnet <CIDR>` leaves out,
   for example, a management subnet. When one agent gives a test more than one source, `plan` warns on

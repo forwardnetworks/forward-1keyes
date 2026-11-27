@@ -105,12 +105,13 @@ type candidate struct {
 	testID   string
 	testName string
 	agents   []string
+	keyDest  bool // the key carries the destination
 }
 
 // splitFlow is a flow with one source prefix and one destination prefix. A
 // location filter in Forward takes one value, so a flow with several of either
-// is several flows. keyDest is set only when the destination had several
-// prefixes, so the key of every other flow is the one it always had.
+// is several flows. keyDest is set here only when the destination had several
+// prefixes; separateKeys adds it later where two checks would share a key.
 type splitFlow struct {
 	flow    Flow
 	keyDest string
@@ -134,10 +135,7 @@ func splitFlows(flows []Flow) []splitFlow {
 				one.DestPrefixes = []netip.Prefix{d}
 				sf := splitFlow{flow: one}
 				if len(dests) > 1 || f.KeyByDest {
-					sf.keyDest = d.Addr().String()
-					if !d.IsSingleIP() {
-						sf.keyDest = d.String()
-					}
+					sf.keyDest = destMember(d)
 				}
 				out = append(out, sf)
 			}
@@ -146,11 +144,68 @@ func splitFlows(flows []Flow) []splitFlow {
 	return out
 }
 
+// destMember is how a key writes a destination: a single address bare, any
+// other prefix in CIDR form.
+func destMember(d netip.Prefix) string {
+	if d.IsSingleIP() {
+		return d.Addr().String()
+	}
+	return d.String()
+}
+
+// meaningGroup is the per-test checks that mean the same: they become one check.
+type meaningGroup struct{ members []*candidate }
+
+// owner is the member whose key the merged check keeps: the smallest.
+func (g *meaningGroup) owner() *candidate {
+	owner := g.members[0]
+	for _, c := range g.members[1:] {
+		if c.key < owner.key {
+			owner = c
+		}
+	}
+	return owner
+}
+
+// separateKeys makes the checks' keys distinct. A key leaves the destination
+// out when a flow has only one, so two checks of one test can share a key: in
+// the from-target direction every flow has the same source, the target. Only
+// when two merged checks would end up with one key does each per-test check
+// that gave it, and does not yet carry its destination in the key, start to; a
+// plan whose keys are already distinct keeps every one of them. It repeats
+// because a merged check then takes its smallest key afresh. All colliding
+// checks change together, so no order of the input decides who keeps a key.
+func separateKeys(groups []*meaningGroup) {
+	for {
+		byKey := map[string][]*candidate{}
+		for _, g := range groups {
+			o := g.owner()
+			byKey[o.key] = append(byKey[o.key], o)
+		}
+		changed := false
+		for _, owners := range byKey {
+			if len(owners) < 2 {
+				continue
+			}
+			for _, c := range owners {
+				if !c.keyDest {
+					c.keyDest, changed = true, true
+					c.key = SourceKey(KeyInput{TestID: c.testID, Slot: c.slot, Protocol: c.protocol, Port: c.port, Dest: destMember(c.dest[0])})
+				}
+			}
+		}
+		if !changed {
+			return
+		}
+	}
+}
+
 // BuildPlannedChecks turns flows into desired checks. Agents of one test that
 // share a slot give one check; checks of different tests with the same
 // source, destination, protocol and port merge into one that keeps the
-// lexically smallest source key and lists every contributing test. The result
-// is ordered by source key.
+// lexically smallest source key and lists every contributing test. Where two
+// merged checks would share a key, their keys carry the destination (see
+// separateKeys). The result is ordered by source key.
 func BuildPlannedChecks(flows []Flow) []PlannedCheck {
 	// 1. one candidate per (test, slot, protocol, port, destination)
 	var cands []*candidate
@@ -166,6 +221,7 @@ func BuildPlannedChecks(flows []Flow) []PlannedCheck {
 				key:  SourceKey(KeyInput{TestID: f.TestID, Slot: slot, Protocol: f.Protocol, Port: f.Port, Dest: one.keyDest}),
 				slot: slot, source: Source{InternetEdge: f.Source.InternetEdge, Prefixes: sortedPrefixes(f.Source.Prefixes)},
 				dest: dest, protocol: f.Protocol, port: f.Port, testID: f.TestID, testName: f.TestName,
+				keyDest: one.keyDest != "",
 			}
 			index[id] = c
 			cands = append(cands, c)
@@ -176,9 +232,8 @@ func BuildPlannedChecks(flows []Flow) []PlannedCheck {
 	}
 
 	// 2. merge candidates that mean the same: from, to, protocol, port
-	type group struct{ members []*candidate }
-	groups := map[string]*group{}
-	var order []string
+	groups := map[string]*meaningGroup{}
+	var order []*meaningGroup
 	for _, c := range cands {
 		from := "edge"
 		if !c.source.InternetEdge {
@@ -187,22 +242,17 @@ func BuildPlannedChecks(flows []Flow) []PlannedCheck {
 		m := strings.Join([]string{from, joinPrefixes(c.dest, ","), c.protocol, portString(c.port)}, "\x00")
 		g, ok := groups[m]
 		if !ok {
-			g = &group{}
+			g = &meaningGroup{}
 			groups[m] = g
-			order = append(order, m)
+			order = append(order, g)
 		}
 		g.members = append(g.members, c)
 	}
+	separateKeys(order)
 
-	out := make([]PlannedCheck, 0, len(groups))
-	for _, m := range order {
-		members := groups[m].members
-		owner := members[0]
-		for _, c := range members[1:] {
-			if c.key < owner.key {
-				owner = c
-			}
-		}
+	out := make([]PlannedCheck, 0, len(order))
+	for _, g := range order {
+		members, owner := g.members, g.owner()
 		pc := PlannedCheck{
 			SourceKey: owner.key, Slot: owner.slot, Source: owner.source,
 			DestPrefixes: owner.dest, Protocol: owner.protocol, Port: owner.port,

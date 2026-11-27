@@ -29,14 +29,14 @@ type KeyInput struct {
 	Slot     string
 	Protocol string
 	Port     *int // nil for protocols without a port, such as ICMP
-	// Dest is the one destination address of a flow whose destination has
-	// several modelled addresses; empty for every other flow.
+	// Dest is the check's one destination, set for a flow whose destination has
+	// several modelled addresses and for checks that would otherwise share a key
+	// (see separateKeys); empty for every other check.
 	Dest string
 }
 
 // SourceKey returns "sha256:<64 lowercase hex>" over the canonical JSON of
-// {test_id, slot, protocol, port}, plus dest for a flow whose destination has
-// several addresses.
+// {test_id, slot, protocol, port}, plus dest when KeyInput has one.
 func SourceKey(in KeyInput) string {
 	var port any
 	if in.Port != nil {
