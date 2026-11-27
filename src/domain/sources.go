@@ -220,11 +220,14 @@ func (r SourceReport) observed(a SourceAgent, line func(string, ...any)) {
 			line("  No flag is suggested for %s: it would also remove addresses this plan uses of agent %s", p, strings.Join(others, ", agent "))
 			continue
 		}
+		// Nothing read says anything about traffic to the agent, so a prefix a
+		// check goes to is never advised away.
+		if slices.ContainsFunc(r.ReturnTo[a.ID], p.Overlaps) {
+			line("  No flag is suggested for %s: a planned check goes to this agent there, and that traffic was not looked up", p)
+			continue
+		}
 		suggested = true
 		line("  To plan without %s, add: --ignore-agent-subnet %s", p, p)
-		if slices.ContainsFunc(r.ReturnTo[a.ID], p.Overlaps) {
-			line("  Take care: a planned check also goes to this agent in %s (the return check of an agent-to-agent test). The flag would change it too, and its traffic was not looked up.", p)
-		}
 	}
 	if suggested {
 		line("  Not being seen in one hour does not prove a prefix unused.")

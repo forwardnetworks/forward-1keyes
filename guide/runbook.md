@@ -272,15 +272,19 @@ hold. It never adds the flag itself.
 - The agent is not an enterprise cluster.
 - No other agent with a planned flow, as a source or a destination, has an address in the prefix.
   If one does, the warning names it.
+- No planned check goes to the warned agent in the prefix, as the return check of a two-way or
+  from-target agent-to-agent test does. That traffic is not looked up, so the warning says no flag
+  is suggested and why. The flag would remove the agent's address there too; you can still add it
+  yourself.
+
+The notes on what "not seen" proves and on stale checks appear only when a prefix is suggested.
+
 Read the suggestion with its limits in mind:
 
 - **Not seen does not mean unused.** It is one hour, and only tests with path visualization data. A
   route change or a second destination address can use another source.
 - The address seen may differ from the one the agent holds if something translates it, for example
   for an agent in a container or behind NAT. This has been tried on one lab network only.
-- The flag also removes the agent's address where a check goes **to** the agent, as the return check of
-  a two-way or from-target agent-to-agent test does. Nothing about that traffic is looked up. The
-  warning says `Take care` when a suggested prefix has such a check.
 - With the flag, the next plan marks checks already made from that prefix `stale`. They stay in
   Forward until you delete them.
 - A result that cannot be read, or is not read to the end, is reported as such. A rate limit is not
