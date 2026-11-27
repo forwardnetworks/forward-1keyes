@@ -148,6 +148,7 @@ func addFlags(verb string, fs *pflag.FlagSet, o *options) {
 		fs.StringVar(&o.address, "address", defaultListenAddress, "loopback ip:port to listen on, in plain HTTP")
 		fs.DurationVar(&o.window, "window", time.Hour, "how far back to read measurements")
 		selection()
+		replay()
 		debug()
 	case "changes":
 		fs.StringVar(&o.group, "te-account-group", "", "ThousandEyes account group name (required)")

@@ -325,6 +325,28 @@ func (r Recording) CheckGroup(name string) error {
 	return nil
 }
 
+// Holds says whether the recording can answer for a test: it holds the test,
+// and the lookup of its target's name when it needs one. A test the recording
+// lacks cannot be told from one that never existed, and neither is answered:
+// saying that no check is known would be a guess.
+func (r Recording) Holds(testID string) error {
+	cfg, ok := r.TestConfig(testID)
+	if !ok {
+		return fmt.Errorf("%w: test %s", errNotRecorded, testID)
+	}
+	host, named := TargetHost(cfg)
+	if !cfg.Enabled || !named {
+		return nil // a disabled test's name is never looked up
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return nil
+	}
+	if !slices.ContainsFunc(r.Lookups, func(l RecordedLookup) bool { return l.Name == host }) {
+		return fmt.Errorf("%w: lookup of %q", errNotRecorded, host)
+	}
+	return nil
+}
+
 // WindowDuration is the window the recording was made with.
 func (r Recording) WindowDuration() time.Duration {
 	d, _ := time.ParseDuration(r.Window)

@@ -186,7 +186,8 @@ after every read succeeded, so a failed run leaves no file and an existing file 
 one needs `--force`. On a filesystem that cannot make a hard link (some network mounts) use `--force`
 as well. Treat the file like the plan file: it holds test names, targets and internal addresses.
 
-Then add `--te-replay <file>` to `plan`, `apply`, `report` or `changes`:
+Then add `--te-replay <file>` to `plan`, `apply`, `report`, `changes` or `listen` (for `listen`, see
+[demonstrating an alert](webhooks.md#demonstrating-an-alert-from-a-recording)):
 
     forward-1keyes report --network "<Forward network>" --te-account-group "<account group>" \
       --te-replay thousandeyes.rec.json

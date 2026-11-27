@@ -78,6 +78,14 @@ func (rp *replaySource) markOrNil() *domain.RecordingMark {
 	return &m
 }
 
+// holds says whether a replay can answer for a test; live data always can.
+func (rp *replaySource) holds(testID string) error {
+	if rp == nil {
+		return nil
+	}
+	return rp.rec.Holds(testID)
+}
+
 // window is the window a report reads. A replay measures it back from the time
 // of the recording: with no --window it is the recorded one, and a longer one
 // is refused.

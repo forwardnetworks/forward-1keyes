@@ -36,6 +36,42 @@ type AlertAnswer struct {
 	SnapshotProcessedAt string     `json:"snapshot_processed_at"`
 	CouldNotAnswer      bool       `json:"could_not_answer"`
 	Rows                []AlertRow `json:"rows"`
+	// Recording is set when the answer was made from a recording.
+	Recording *RecordingMark `json:"recording,omitempty"`
+}
+
+// The two sentences that read a measurement as being about the alert at hand.
+// A replay writes neither: its measurements are from another time.
+const (
+	liveCaveat  = "ThousandEyes still raised an alert: the cause may be above the network layer, or the fault may have ended before the latest measurement, or began after the snapshot."
+	clearedLead = "The alert cleared, but not every check of this test is healthy."
+)
+
+// replayStatement keeps a replay's measurements apart from the alert it answers.
+const replayStatement = "These measurements were taken when the recording was made; they do not show the state of the network when this alert arrived."
+
+// FromRecording is the answer as a replay sends it: the recording named in the
+// first line of the text and in its own member, nothing that reads the recorded
+// measurements as being about this alert, and, with rows, a sentence that says
+// they are not. The rows and verdicts are untouched.
+func (a AlertAnswer) FromRecording(mark RecordingMark) AlertAnswer {
+	// A sentence is taken out only where the answer wrote it. It is written
+	// before any row, so the first copy is then the tool's own; elsewhere the
+	// same words belong to a check and stay.
+	text := a.Text
+	healthy, triggered := allowed(a.Rows), a.Alert == Alert{Triggered: true}.Kind()
+	switch {
+	case healthy && triggered:
+		text = strings.Replace(text, "\n"+liveCaveat, "", 1)
+	case len(a.Rows) > 0 && !healthy && !triggered:
+		text = strings.Replace(text, "\n"+clearedLead, "", 1)
+	}
+	if len(a.Rows) > 0 {
+		text += "\n" + replayStatement
+	}
+	a.Text = mark.Line() + "\n" + text
+	a.Recording = &mark
+	return a
 }
 
 // Errors of listen's input. Neither carries the value it refused.
@@ -139,11 +175,11 @@ func NewAlertAnswer(a Alert, received time.Time, snapshotID string, processed ti
 	case allowed(rows):
 		fmt.Fprintf(&b, "\nIn every check of this test, %s.", allowedStatement)
 		if a.Triggered {
-			b.WriteString("\nThousandEyes still raised an alert: the cause may be above the network layer, or the fault may have ended before the latest measurement, or began after the snapshot.")
+			b.WriteString("\n" + liveCaveat)
 		}
 	default:
 		if !a.Triggered {
-			b.WriteString("\nThe alert cleared, but not every check of this test is healthy.")
+			b.WriteString("\n" + clearedLead)
 		}
 		for _, r := range rows {
 			if !troubled(r) {

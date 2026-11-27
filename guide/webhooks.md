@@ -130,7 +130,7 @@ alert to `NOTIFY_URL`.
 State: built, tested against a fake ThousandEyes and a fake Forward,
 and run twice against a live ThousandEyes alert in the lab (2026-11-26): a real HTTP test failing, an
 alert rule with a webhook, a quick tunnel to the listener, and a second tunnel to the capture
-receiver standing in for `NOTIFY_URL`. `listen` does not take `--te-replay`.
+receiver standing in for `NOTIFY_URL`.
 
 ![listen answering a live alert](images/cli-listen.png)
 
@@ -168,6 +168,38 @@ Through the public address, a request without the token was answered 401, and th
 Afterwards the alert rule, the webhook operation and the connector were deleted (each read back as
 404), both tunnels and the listener were stopped, and the public addresses answered 530. The second
 run was torn down the same way.
+
+## Demonstrating an alert from a recording
+
+With `--te-replay`, `listen` answers from a file made by `record` instead of ThousandEyes, so an alert
+can be shown with the trial over or no route to ThousandEyes. Forward is still read live and must hold a
+network that matches the recorded addresses. Set `FWD_URL`, `FWD_USER`, `FWD_PASS`, `NOTIFY_URL` and
+`ALERT_TOKEN` as below, and **export** them, so that the shell that posts the alert has the token too.
+Start the listener, then post the alert yourself from a second shell with the same `ALERT_TOKEN`:
+
+    forward-1keyes record --te-account-group "<account group>" --out thousandeyes.rec.json
+    forward-1keyes listen --network "<Forward network>" --te-account-group "<account group>" \
+      --te-replay thousandeyes.rec.json
+
+    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8644/thousandeyes/alerts \
+      -H "Authorization: Bearer $ALERT_TOKEN" \
+      -d '{"testId":"<test id>","alertId":"demo-1","notificationType":"2"}'
+
+It answers 202, and the message is printed and **really sent** to `NOTIFY_URL`. Use a new `alertId` to
+post again within three hours; the same one is a repeat and is not answered twice.
+
+- **It never looks live.** Every message, including one that could not be answered, starts with the
+  line naming the recording and has a `recording` member. A message with results says its measurements
+  were taken when the recording was made and do not show the network when the alert arrived. The
+  sentences that read a live measurement as being about the alert are left out.
+- The recording is read once, at the start; a bad file or one for another account group stops the run
+  before it listens. `--window` counts back from the recording time and cannot be longer than the
+  recorded one. `--resolver` is refused, and `TE_API_TOKEN` is not read.
+- A test the recording does not hold cannot be answered: record with a selection at least as wide as
+  the listener's. The start does not detect the gap. A narrower recording can also change another
+  test's answer, for example which tests a shared check is said to be behind.
+- **Check your token yourself.** Because the ThousandEyes token is not read, the listener cannot tell
+  that `ALERT_TOKEN` equals it. Never use that token as the alert token.
 
 ## What a receiver needs
 

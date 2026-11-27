@@ -55,8 +55,9 @@ func (r redacting) Write(p []byte) (int, error) {
 }
 
 // listenConfig checks the address and the environment, all before anything is
-// built, read or listened on.
-func (r Runner) listenConfig(o options) (Config, string, error) {
+// built, read or listened on. A replay never reads TE_API_TOKEN, so the alert
+// token cannot be compared with it.
+func (r Runner) listenConfig(o options, replaying bool) (Config, string, error) {
 	address, err := ports.ValidateListenAddress(o.address)
 	if err != nil {
 		return Config{}, "", err
@@ -66,7 +67,11 @@ func (r Runner) listenConfig(o options) (Config, string, error) {
 		return Config{}, "", fmt.Errorf("ALERT_TOKEN must be set (at least %d characters)", minAlertToken)
 	}
 	// ThousandEyes stores the token, so it must open nothing else.
-	for _, other := range []string{"TE_API_TOKEN", "FWD_PASS", "NOTIFY_SECRET", "NOTIFY_URL"} {
+	others := []string{"FWD_PASS", "NOTIFY_SECRET", "NOTIFY_URL"}
+	if !replaying {
+		others = append([]string{"TE_API_TOKEN"}, others...)
+	}
+	for _, other := range others {
 		if token == r.Env(other) {
 			return Config{}, "", fmt.Errorf("ALERT_TOKEN must differ from %s", other)
 		}
@@ -75,7 +80,7 @@ func (r Runner) listenConfig(o options) (Config, string, error) {
 	if err != nil {
 		return Config{}, "", fmt.Errorf("listen needs NOTIFY_URL: %w", err)
 	}
-	cfg, err := r.config("listen", true, o)
+	cfg, err := r.config("listen", !replaying, o)
 	if err != nil {
 		return Config{}, "", err
 	}
@@ -91,10 +96,21 @@ func (r Runner) listen(o options) (int, error) {
 	if o.window < time.Second {
 		return 0, usageError{"--window must be at least one second"}
 	}
-	cfg, address, err := r.listenConfig(o)
+	// The recording is read and checked once, before anything listens, and
+	// answers every alert of the run.
+	rp, err := r.loadReplay(o, o.group)
 	if err != nil {
 		return 0, err
 	}
+	window, err := rp.window(o)
+	if err != nil {
+		return 0, err
+	}
+	cfg, address, err := r.listenConfig(o, rp != nil)
+	if err != nil {
+		return 0, err
+	}
+	rp.wire(&cfg)
 	secrets := cfg.secrets()
 	mu := &sync.Mutex{}
 	out, errs := redacting{mu, r.IO.Out, secrets}, redacting{mu, r.IO.Err, secrets}
@@ -103,7 +119,7 @@ func (r Runner) listen(o options) (int, error) {
 		return 0, err
 	}
 	params := usecases.ReportParams{
-		Window: o.window,
+		Window: window,
 		Plan: usecases.PlanParams{
 			AccountGroup: o.group, NetworkName: o.network, MaxFlows: 500, Persistent: true,
 			UpdateStrategy: "U1", ToolVersion: ToolVersion, ResolverSetting: cfg.ResolverSetting, IgnoreAgentSubnets: ignored,
@@ -119,13 +135,20 @@ func (r Runner) listen(o options) (int, error) {
 		// only the parent's end means the listener is stopping.
 		working, release := context.WithTimeout(ctx, deadline)
 		defer release()
-		a, err := usecases.AnswerAlert(working, usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, params, alert, received)
+		var a domain.AlertAnswer
+		err := rp.holds(alert.TestID)
+		if err == nil {
+			a, err = usecases.AnswerAlert(working, usecases.PlanDeps{TE: deps.TE, Forward: deps.Reader, Resolver: deps.Resolver}, params, alert, received)
+		}
 		if ctx.Err() != nil {
 			return // stopping: the alert is listed as unanswered
 		}
 		if err != nil {
 			fmt.Fprintf(errs, "error: alert %s for test %s: %v\n", alert.ID, alert.TestID, err)
 			a = domain.UnansweredAlert(alert, received)
+		}
+		if mark := rp.markOrNil(); mark != nil {
+			a = a.FromRecording(*mark)
 		}
 		fmt.Fprintf(out, "\n%s\n", a.Text)
 		body, err := json.Marshal(a)
@@ -136,11 +159,16 @@ func (r Runner) listen(o options) (int, error) {
 			fmt.Fprintf(errs, "error: the answer to alert %s was not delivered: %v\n", alert.ID, err)
 		}
 	}
-	return r.serve(address, webhook.New(cfg.AlertToken, r.now, answer), out)
+	started := ""
+	if mark := rp.markOrNil(); mark != nil {
+		started = "alerts are answered from a recording. " + mark.Line()
+	}
+	return r.serve(address, webhook.New(cfg.AlertToken, r.now, answer), out, started)
 }
 
-// serve listens on a loopback address until told to stop.
-func (r Runner) serve(address string, listener *webhook.Listener, out io.Writer) (int, error) {
+// serve listens on a loopback address until told to stop. started, when not
+// empty, is printed after the line that says it is listening.
+func (r Runner) serve(address string, listener *webhook.Listener, out io.Writer, started string) (int, error) {
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
 		return 0, fmt.Errorf("cannot listen: %w", err)
@@ -160,6 +188,9 @@ func (r Runner) serve(address string, listener *webhook.Listener, out io.Writer)
 	server := listener.Server()
 	bound := ln.Addr().String()
 	fmt.Fprintf(out, "listening on %s for POST %s\n", bound, webhook.AlertPath)
+	if started != "" {
+		fmt.Fprintln(out, started)
+	}
 	if r.Listen.Serving != nil {
 		r.Listen.Serving(bound, server)
 	}
