@@ -322,8 +322,12 @@ func (c *Client) ListAgents(ctx context.Context, aid string) ([]ports.AgentInfo,
 				ID      string   `json:"agentId"`
 				Type    string   `json:"agentType"`
 				IPs     []string `json:"ipAddresses"`
+				State   any      `json:"agentState"`
+				Seen    any      `json:"lastSeen"`
 				Members []struct {
-					IPs []string `json:"ipAddresses"`
+					IPs   []string `json:"ipAddresses"`
+					State any      `json:"agentState"`
+					Seen  any      `json:"lastSeen"`
 				} `json:"clusterMembers"`
 			} `json:"agents"`
 		}
@@ -334,8 +338,14 @@ func (c *Client) ListAgents(ctx context.Context, aid string) ([]ports.AgentInfo,
 			info := ports.AgentInfo{ID: a.ID, Kind: ports.AgentKind(a.Type)}
 			if info.Kind != ports.AgentCloud {
 				ips := a.IPs
+				// The cluster's own state comes first, then its members' in the
+				// order reported: the first that is not online is the one kept.
+				info.Condition = condition(a.State, a.Seen)
 				for _, m := range a.Members {
 					ips = append(ips, m.IPs...)
+					if info.Condition.State == "" {
+						info.Condition = condition(m.State, m.Seen)
+					}
 				}
 				info.Addresses = parseAddrs(ips)
 			}
@@ -344,6 +354,18 @@ func (c *Client) ListAgents(ctx context.Context, aid string) ([]ports.AgentInfo,
 		return nil
 	})
 	return out, err
+}
+
+// condition reads a state and a last-seen time as ThousandEyes gives them. A
+// state that is missing, null or empty is not given; one that is not text is a
+// state, and not "online".
+func condition(state, seen any) ports.AgentCondition {
+	text, isText := state.(string)
+	if state != nil && !isText {
+		text = "unknown"
+	}
+	at, _ := seen.(string)
+	return ports.ConditionOf(text, at)
 }
 
 func parseAddrs(ips []string) []netip.Addr {

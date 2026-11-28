@@ -46,7 +46,7 @@ func Report(ctx context.Context, deps PlanDeps, p ReportParams) (domain.Report, 
 		types[t.ID] = t.Type
 	}
 
-	out := domain.Report{SnapshotID: snapshot, Rows: []domain.ReportRow{}}
+	out := domain.Report{SnapshotID: snapshot, Rows: []domain.ReportRow{}, NotOnline: body.NotOnline}
 	records := map[string][]domain.NetworkRecord{} // test ID -> records, read once
 	for _, row := range body.Rows {
 		if reason := domain.NotComparedReason(row, types); reason != "" {

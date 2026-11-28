@@ -110,6 +110,7 @@ func Changes(ctx context.Context, deps PlanDeps, p ChangesParams) (domain.Change
 	}
 	c := body.Counts
 	out.Plan = domain.PendingWork{Create: c.Create, Update: c.Update, Stale: c.Stale, Collision: c.Collision, NotImportable: c.NotImportable}
+	out.NotOnline = body.NotOnline
 	if out.NothingToCompare {
 		return out, nil
 	}
@@ -152,7 +153,9 @@ func Notify(ctx context.Context, n ports.Notifier, c domain.Changes) error {
 		// Recording is present only for a replay, so a receiver can tell without
 		// reading the text.
 		Recording *domain.RecordingMark `json:"recording,omitempty"`
-	}{c.Summary(), c.From, c.To, c.Changes, c.Plan, c.Recording})
+		// NotOnline is present only when a named agent is not online.
+		NotOnline []domain.NotOnlineAgent `json:"agents_not_online,omitempty"`
+	}{c.Summary(), c.From, c.To, c.Changes, c.Plan, c.Recording, c.NotOnline})
 	if err != nil {
 		return err
 	}

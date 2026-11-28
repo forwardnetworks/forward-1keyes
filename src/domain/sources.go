@@ -103,6 +103,9 @@ type SourceReport struct {
 	// ReturnTo holds, by agent, the prefixes of that agent which a planned
 	// check goes to: the destinations of its from-target flows.
 	ReturnTo map[string][]netip.Prefix
+	// NotOnline are the agents of selected tests that are not online. Their
+	// addresses are not used, so no flag is suggested while there is one.
+	NotOnline []string
 	// Recording is set when the plan was made from a recording, which holds no
 	// observed sources: nothing was read.
 	Recording bool
@@ -224,6 +227,10 @@ func (r SourceReport) observed(a SourceAgent, line func(string, ...any)) {
 		// check goes to is never advised away.
 		if slices.ContainsFunc(r.ReturnTo[a.ID], p.Overlaps) {
 			line("  No flag is suggested for %s: a planned check goes to this agent there, and that traffic was not looked up", p)
+			continue
+		}
+		if len(r.NotOnline) > 0 {
+			line("  No flag is suggested for %s: the addresses of these agents are not used, so what the flag would remove from them is not known: not online in ThousandEyes: agent %s", p, strings.Join(r.NotOnline, ", agent "))
 			continue
 		}
 		suggested = true

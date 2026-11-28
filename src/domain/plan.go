@@ -74,6 +74,8 @@ type PlanInput struct {
 	IgnoredAgentSubnets []string
 	// Source is set only for a plan made from a recording.
 	Source *RecordingMark
+	// NotOnline are the named agents that are not online.
+	NotOnline []NotOnlineAgent
 }
 
 // CanonicalPrefixes returns prefixes masked, ordered by address and then
@@ -115,6 +117,8 @@ type PlanBody struct {
 	// Source says the plan was made from a recording, and which. A plan made
 	// from live data has no such member, so its file and digest do not change.
 	Source *RecordingMark `json:"source,omitempty"`
+	// NotOnline is present only when a named agent is not online.
+	NotOnline []NotOnlineAgent `json:"agents_not_online,omitempty"`
 }
 
 // NewPlan builds a plan body: it counts the rows, applies the flow cap, and
@@ -223,20 +227,29 @@ func NewPlan(in PlanInput) (PlanBody, error) {
 	}
 	slices.SortFunc(resolutions, func(a, b Resolution) int { return strings.Compare(a.Name, b.Name) })
 	capExceeded := counts.Create+counts.Update+counts.Unchanged+counts.Stale > in.MaxFlows
-	return PlanBody{
+	body := PlanBody{
 		Schema: PlanSchema, ToolVersion: in.ToolVersion, ContractVersion: contractVersion,
 		TE: in.TE, Forward: in.Forward, Persistent: in.Persistent, UpdateStrategy: in.UpdateStrategy,
-		MaxFlows: in.MaxFlows, Appliable: counts.Collision == 0 && !capExceeded, CapExceeded: capExceeded,
+		MaxFlows: in.MaxFlows, CapExceeded: capExceeded,
 		Rows: rows, Counts: counts, Observed: observed, Resolver: in.Resolver, Resolutions: resolutions, MappingSHA256: mapping,
-		Tests: tests, Agents: agents, IgnoredAgentSubnets: append([]string{}, in.IgnoredAgentSubnets...), Source: in.Source,
-	}, nil
+		Tests: tests, Agents: agents, IgnoredAgentSubnets: append([]string{}, in.IgnoredAgentSubnets...), Source: in.Source, NotOnline: slices.Clone(in.NotOnline),
+	}
+	body.Appliable = counts.Collision == 0 && !capExceeded && !body.PartialView()
+	return body, nil
 }
 
-// ExitCode is the exit code of `plan`: 3 when a collision is present or the
-// flow cap is exceeded, 2 when a create or update is pending, otherwise 0.
+// PartialView says that something is waiting to be written while an agent of a
+// selected test is not online. Leaving its flows out can move the keys and
+// contributors of other checks, so then no row is trusted to be written.
+func (b PlanBody) PartialView() bool {
+	return b.Counts.Create+b.Counts.Update > 0 && len(SelectedIDs(b.NotOnline)) > 0
+}
+
+// ExitCode is the exit code of `plan`: 3 when a collision is present, the
+// flow cap is exceeded or something would be written on a partial view, 2 when a create or update is pending, otherwise 0.
 func (b PlanBody) ExitCode() int {
 	switch {
-	case b.Counts.Collision > 0 || b.CapExceeded:
+	case b.Counts.Collision > 0 || b.CapExceeded || b.PartialView():
 		return 3
 	case b.Counts.Create > 0 || b.Counts.Update > 0:
 		return 2

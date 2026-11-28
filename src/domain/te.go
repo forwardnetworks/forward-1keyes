@@ -60,6 +60,11 @@ type AgentInfo struct {
 	ID        string
 	Kind      AgentKind
 	Addresses []netip.Addr
+	// Condition is set only for an agent that is not online.
+	Condition AgentCondition
+	// NamedOutside is set only by a recording: a test it does not hold names
+	// this agent, which is not online.
+	NamedOutside bool
 }
 
 // TargetHost is the host a test points at: the server of an agent-to-server

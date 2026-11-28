@@ -582,6 +582,9 @@ func printChanges(w io.Writer, c domain.Changes) {
 		_ = tw.Flush()
 	}
 	fmt.Fprintf(w, "plan now: %s\n", c.Plan)
+	if line := domain.NotOnlineLine(c.NotOnline); line != "" {
+		fmt.Fprintln(w, line)
+	}
 }
 
 func printReport(w io.Writer, rep domain.Report) {
@@ -589,6 +592,7 @@ func printReport(w io.Writer, rep domain.Report) {
 	if rep.Recording != nil {
 		fmt.Fprintln(w, rep.Recording.Line())
 	}
+	printNotOnline(w, rep.NotOnline)
 	for _, row := range rep.Rows {
 		if !row.Compared {
 			fmt.Fprintf(w, "\nnot compared  %s\n    %s\n", row.Name, row.Reason)
@@ -609,6 +613,12 @@ func printReport(w io.Writer, rep domain.Report) {
 	}
 }
 
+func printNotOnline(w io.Writer, agents []domain.NotOnlineAgent) {
+	for _, a := range agents {
+		fmt.Fprintln(w, a.Line())
+	}
+}
+
 func printPlan(w io.Writer, b domain.PlanBody, out, digest string) {
 	fmt.Fprintf(w, "plan for %s (aid %s) on %s, snapshot %s: written to %s\n", b.TE.AccountGroupName, b.TE.AID, b.Forward.NetworkName, b.Forward.SnapshotID, out)
 	if b.Source != nil {
@@ -617,6 +627,10 @@ func printPlan(w io.Writer, b domain.PlanBody, out, digest string) {
 	c := b.Counts
 	fmt.Fprintf(w, "create %d  update %d  unchanged %d  stale %d  collision %d  not importable %d  (cap %d, appliable %v)\n",
 		c.Create, c.Update, c.Unchanged, c.Stale, c.Collision, c.NotImportable, b.MaxFlows, b.Appliable)
+	printNotOnline(w, b.NotOnline)
+	if b.PartialView() {
+		fmt.Fprintln(w, "not appliable: an agent of a selected test is not online, so no check is created or updated")
+	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "OUTCOME\tKEY\tNAME\tDETAIL")
 	for _, row := range b.Rows {

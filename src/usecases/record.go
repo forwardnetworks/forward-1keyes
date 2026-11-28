@@ -67,8 +67,20 @@ func Record(ctx context.Context, deps RecordDeps, p RecordParams) (domain.Record
 		results = append(results, domain.TestResults{TestID: t.ID, Records: got})
 	}
 	_, lookups := resolveHostnames(ctx, deps.Resolver, selected)
+	// Only the selected tests are saved, so an agent that is not online and is
+	// named by another test is marked: a replay still has to warn about it.
+	held := map[string]bool{}
+	for _, t := range selected {
+		held[t.ID] = true
+	}
+	var left []domain.TestConfig
+	for _, t := range configs {
+		if !held[t.ID] {
+			left = append(left, t)
+		}
+	}
 	return domain.NewRecording(domain.RecordingInput{
 		ToolVersion: p.ToolVersion, RecordedAt: p.RecordedAt, Window: p.Window, Group: group,
-		Tests: selected, Agents: agents, Results: results, Lookups: lookups,
+		Tests: selected, Agents: agents, NamedOutside: domain.NamedAgents(left), Results: results, Lookups: lookups,
 	})
 }

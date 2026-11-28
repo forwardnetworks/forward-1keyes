@@ -63,6 +63,10 @@ type RecordedAgent struct {
 	ID        string       `json:"id"`
 	Kind      string       `json:"kind"`
 	Addresses []netip.Addr `json:"addresses"`
+	// The three below are present only for a named agent that is not online.
+	State        string `json:"state,omitempty"`
+	LastSeen     string `json:"last_seen,omitempty"`
+	NamedOutside bool   `json:"named_outside,omitempty"` // a test the file does not hold names it
 }
 
 // RecordedRecord is one network result as the client decoded it.
@@ -117,8 +121,10 @@ type RecordingInput struct {
 	Group       AccountGroup
 	Tests       []TestConfig
 	Agents      []AgentInfo
-	Results     []TestResults
-	Lookups     []Resolution
+	// NamedOutside holds the agents named by a test that is not in Tests.
+	NamedOutside map[string]bool
+	Results      []TestResults
+	Lookups      []Resolution
 }
 
 // NewRecording builds a recording and checks it the way a reader will, so a
@@ -135,8 +141,13 @@ func NewRecording(in RecordingInput) (Recording, error) {
 		rec.Tests = append(rec.Tests, RecordedTest{ID: t.ID, Name: t.Name, Type: t.Type, Enabled: t.Enabled, Labels: t.Labels,
 			Target: recordedTarget(t.Type, t.Target), Protocol: t.Protocol, Port: t.Port, Direction: t.Direction, UsesProxy: t.UsesProxy, AgentIDs: t.AgentIDs})
 	}
+	named := NamedAgents(in.Tests)
 	for _, a := range in.Agents {
-		rec.Agents = append(rec.Agents, RecordedAgent{ID: a.ID, Kind: string(a.Kind), Addresses: a.Addresses})
+		out := RecordedAgent{ID: a.ID, Kind: string(a.Kind), Addresses: a.Addresses}
+		if outside := in.NamedOutside[a.ID]; !a.Online() && (outside || named[a.ID]) {
+			out.State, out.LastSeen, out.NamedOutside = a.Condition.State, a.Condition.LastSeen, outside
+		}
+		rec.Agents = append(rec.Agents, out)
 	}
 	for _, r := range in.Results {
 		out := RecordedResults{TestID: r.TestID, Records: []RecordedRecord{}}
@@ -246,6 +257,18 @@ func (r Recording) validate() error {
 		}
 		if slices.ContainsFunc(a.Addresses, func(ad netip.Addr) bool { return !ad.IsValid() }) {
 			return bad("agent %s has an address that is not one", a.ID)
+		}
+		switch a.State {
+		case "":
+			if a.LastSeen != "" || a.NamedOutside {
+				return bad("agent %s has a last-seen time or a mark but no state", a.ID)
+			}
+		case stateOffline, stateDisabled, stateUnknown:
+			if a.LastSeen != "" && utcTime(a.LastSeen) == "" {
+				return bad("agent %s has a last-seen time that is not one", a.ID)
+			}
+		default:
+			return bad("agent %s has a state that is not offline, disabled or unknown", a.ID)
 		}
 		agents[a.ID] = true
 	}
@@ -382,7 +405,8 @@ func (r Recording) TestConfig(id string) (TestConfig, bool) {
 func (r Recording) AgentInfos() []AgentInfo {
 	out := make([]AgentInfo, 0, len(r.Agents))
 	for _, a := range r.Agents {
-		out = append(out, AgentInfo{ID: a.ID, Kind: AgentKind(a.Kind), Addresses: slices.Clone(a.Addresses)})
+		out = append(out, AgentInfo{ID: a.ID, Kind: AgentKind(a.Kind), Addresses: slices.Clone(a.Addresses),
+			Condition: AgentCondition{State: a.State, LastSeen: utcTime(a.LastSeen)}, NamedOutside: a.NamedOutside})
 	}
 	return out
 }

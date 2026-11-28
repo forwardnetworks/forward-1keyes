@@ -56,7 +56,7 @@ func PlanWithSources(ctx context.Context, deps PlanDeps, p PlanParams) (domain.P
 		return domain.PlanBody{}, found, err
 	}
 	found = domain.SourceReport{Agents: domain.MultiSourceAgents(flows, agents), Used: map[string][]netip.Addr{},
-		ReturnTo: domain.ReturnDestinations(flows), Recording: p.Source != nil}
+		ReturnTo: domain.ReturnDestinations(flows), Recording: p.Source != nil, NotOnline: domain.SelectedIDs(body.NotOnline)}
 	for id := range used {
 		found.Used[id] = agents[id].Addresses
 	}
@@ -95,6 +95,8 @@ func buildPlan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBod
 	for _, a := range agentList {
 		agents[a.ID] = a
 	}
+
+	notOnline := domain.NotOnlineAgents(configs, selected, agents)
 
 	// Locating uses the filtered agents; the plan fingerprints the agents as
 	// ThousandEyes reports them, so apply compares like with like.
@@ -204,6 +206,7 @@ func buildPlan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBod
 	}
 
 	linkReplacements(rows, byID)
+	domain.WarnRows(rows, notOnline)
 
 	setting := p.ResolverSetting
 	if setting == "" {
@@ -219,7 +222,7 @@ func buildPlan(ctx context.Context, deps PlanDeps, p PlanParams) (domain.PlanBod
 		Persistent: p.Persistent, UpdateStrategy: p.UpdateStrategy, MaxFlows: p.MaxFlows, Rows: rows,
 		Observed: observedForPlan(checks, instance, desired), Resolver: setting, Resolutions: resolutions,
 		Tests: observedTests(selected), Agents: observedAgents(agents, usedAgents),
-		IgnoredAgentSubnets: domain.CanonicalPrefixes(p.IgnoreAgentSubnets), Source: p.Source,
+		IgnoredAgentSubnets: domain.CanonicalPrefixes(p.IgnoreAgentSubnets), Source: p.Source, NotOnline: notOnline,
 	})
 	return body, flows, reachable, ends, err
 }
@@ -317,6 +320,9 @@ func agentSource(inv domain.Inventory, agents map[string]domain.AgentInfo, empti
 	if agent.Kind == domain.AgentCloud {
 		return domain.Source{InternetEdge: true}, ""
 	}
+	if !agent.Online() {
+		return domain.Source{}, agent.UnusableReason()
+	}
 	if emptied[id] {
 		return domain.Source{}, allIgnoredReason(id)
 	}
@@ -357,6 +363,9 @@ func agentToAgentFlows(inv domain.Inventory, reported, agents map[string]domain.
 	}
 	if target.Kind == domain.AgentCloud {
 		return nil, fmt.Sprintf("target agent %s is a cloud agent: it has no location in the model", t.Target)
+	}
+	if !target.Online() {
+		return nil, "target " + target.UnusableReason()
 	}
 	if emptied[t.Target] {
 		return nil, "target " + allIgnoredReason(t.Target)

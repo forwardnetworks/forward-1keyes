@@ -35,7 +35,7 @@ Keep them in a file with mode 600 outside the repository, and load it with
    | create | a new check |
    | update | an existing managed check whose content changed |
    | unchanged | nothing to do |
-   | stale | a managed check with no test behind it any more; it is left in place |
+   | stale | a managed check with no test behind it any more; it is left in place. **Read its detail**: while an [agent is not online](#an-agent-that-is-not-online) it may only look stale |
    | collision | something stands in the way: the name is already taken, two managed checks share a key, or a managed check's tags are malformed or from a newer version |
    | not_importable | the test cannot be made into a check; the row says why |
 
@@ -86,6 +86,8 @@ neither is unknown, never working.
   `--ignore-agent-subnet`.
 - Agent-to-agent checks are listed but not compared yet. Stale checks and tests without a check are
   listed with the reason.
+- While an [agent of a selected test is not online](#an-agent-that-is-not-online), the exit status is
+  2 even if every compared check is healthy.
 
 Exit status: **0** only when something was compared and every compared check is healthy; **2** for
 any other result, including nothing to compare; **1** on an error. A result that cannot be read or
@@ -218,7 +220,8 @@ Then add `--te-replay <file>` to `plan`, `apply`, `report`, `changes` or `listen
 
 The tool never deletes or deactivates a check, and its HTTP client refuses DELETE. To remove
 checks, delete them in the Forward UI. They are identified by the tag
-`managed-by:com.forward.1keyes`.
+`managed-by:com.forward.1keyes`. Before deleting a `stale` check, run `plan` and read the row's detail:
+if it [may only look stale](#an-agent-that-is-not-online), keep it.
 
 ## Troubleshooting
 
@@ -235,6 +238,34 @@ checks, delete them in the Forward UI. They are identified by the tag
 Add `--debug` to log each request's method, path, status and duration. `--debug-bodies` adds
 bodies with secrets removed.
 
+### An agent that is not online
+
+When ThousandEyes reports an enterprise agent as `offline` or `disabled` (for a cluster, the cluster or
+any member it lists), the tool does not use its addresses: what the agent last reported may be old or
+incomplete. A state the tool does not know is treated the same way and shown as `unknown`. An agent
+with no state given, and a cloud agent, are treated as online.
+
+`plan` and `report` print a line for each such agent that an enabled test names, whether or not the
+test is selected, and `changes` prints one line naming them all. Their JSON, the `changes` notification and the plan file carry the same list
+as `agents_not_online`.
+
+| What you see | What it means |
+| :--- | :--- |
+| a test is not importable, naming the agent | nothing is planned or compared for what needs that agent's location. Other agents of the same test are still planned and compared, except in an agent-to-agent test, which is left out whole |
+| a `stale` row "may only look stale" | the check may be perfectly good. **Do not delete it** until the agent is back and the row is still stale. Which rows the agent affects is not worked out, so every stale row says this |
+| a `create` row "may already exist under another key" | leaving flows out can change which key a shared check gets |
+| `plan` is not appliable, exit 3 | an agent of a selected test is not online and something would be created or updated. Nothing is written on a partial view |
+
+To write again: bring the agent back, take it off its tests in ThousandEyes, or leave those tests out
+with the selection flags (their checks then show as stale, with the warning). There is no flag to
+override it. While an agent of a selected test is not online, `report` exits 2, an alert answer for a
+test that needs it says why it was not compared, and no `--ignore-agent-subnet` is suggested.
+
+A `changes` run sends nothing for an agent going offline if no check changed and no work is waiting.
+A recording keeps the state, and a replay behaves the same way; an older version of the tool refuses a
+recording that holds one. An agent can drop after ThousandEyes last reported it online: that report is
+still used. `--debug-bodies` logs ThousandEyes replies as they arrive, these two fields included.
+
 ### A check from an address the test does not use
 
 ThousandEyes reports every address of an agent. If more than one of them is in the Forward model,
@@ -250,7 +281,8 @@ address is reported as not importable. The plan file records the prefixes, so th
 approve covers them.
 
 Use the same flag on every later plan. Checks already applied from an ignored subnet are shown as
-`stale` and left in Forward; delete them in the Forward UI if you want them gone:
+`stale` and left in Forward; delete them in the Forward UI if you want them gone, unless the row
+says it [may only look stale](#an-agent-that-is-not-online):
 
 ![the same lab with the management subnet ignored](images/cli-ignore-subnet.png)
 
@@ -288,6 +320,7 @@ Read the suggestion with its limits in mind:
   for an agent in a container or behind NAT. This has been tried on one lab network only.
 - With the flag, the next plan marks checks already made from that prefix `stale`. They stay in
   Forward until you delete them.
+- No flag is suggested while an agent of a selected test is not online.
 - A result that cannot be read, or is not read to the end, is reported as such. A rate limit is not
   waited for or retried. At most 20 tests are read in one run, in test ID order, and the warning
   says how many were not read. None of these makes `plan` fail.

@@ -61,6 +61,8 @@ type Changes struct {
 	Plan           PendingWork   `json:"plan"`
 	// Recording is set when the ThousandEyes data came from a recording.
 	Recording *RecordingMark `json:"recording,omitempty"`
+	// NotOnline is present only when a named agent is not online.
+	NotOnline []NotOnlineAgent `json:"agents_not_online,omitempty"`
 }
 
 // Reportable says whether there is something to tell: a change or waiting work.
@@ -99,6 +101,9 @@ func (c Changes) Summary() string {
 		fmt.Fprintf(&b, "\n%s: %s", ch.Kind, ch.Name)
 	}
 	fmt.Fprintf(&b, "\nplan now: %s", c.Plan)
+	if line := NotOnlineLine(c.NotOnline); line != "" {
+		fmt.Fprintf(&b, "\n%s", line)
+	}
 	return b.String()
 }
 

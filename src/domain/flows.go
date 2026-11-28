@@ -36,6 +36,7 @@ const (
 	kindUnresolved      = "unresolved"
 	kindInvalidTarget   = "invalid target"
 	typeAgentToServer   = "agent-to-server"
+	typeAgentToAgent    = "agent-to-agent"
 	typeHTTPServer      = "http-server"
 )
 

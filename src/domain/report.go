@@ -135,11 +135,16 @@ type Report struct {
 	Rows       []ReportRow `json:"rows"`
 	// Recording is set when the ThousandEyes data came from a recording.
 	Recording *RecordingMark `json:"recording,omitempty"`
+	// NotOnline is present only when a named agent is not online.
+	NotOnline []NotOnlineAgent `json:"agents_not_online,omitempty"`
 }
 
-// ExitCode is 0 only when at least one check was compared and every compared
-// check is healthy; otherwise 2.
+// ExitCode is 0 only when at least one check was compared, every compared
+// check is healthy and every agent of a selected test is online; otherwise 2.
 func (r Report) ExitCode() int {
+	if len(SelectedIDs(r.NotOnline)) > 0 {
+		return 2 // something that should have been compared was not
+	}
 	compared := 0
 	for _, row := range r.Rows {
 		if !row.Compared {
@@ -169,9 +174,11 @@ func NotComparedReason(row Row, testTypes map[string]string) string {
 		}
 		return ""
 	case OutcomeCreate:
-		return "there is no check in Forward yet"
+		// A create or stale row has a reason of its own only when an agent that
+		// is not online makes the usual one untrue.
+		return cmp.Or(row.Reason, "there is no check in Forward yet")
 	case OutcomeStale:
-		return "no test is behind this check any more"
+		return cmp.Or(row.Reason, "no test is behind this check any more")
 	}
 	return strings.TrimSpace(string(row.Outcome) + ": " + row.Reason)
 }

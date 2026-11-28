@@ -14,9 +14,17 @@ type (
 	TestConfig   = domain.TestConfig
 	AgentInfo    = domain.AgentInfo
 	AgentKind    = domain.AgentKind
-	Inventory    = domain.Inventory
-	Subnet       = domain.Subnet
+	// AgentCondition is what is kept of an agent that is not online.
+	AgentCondition = domain.AgentCondition
+	Inventory      = domain.Inventory
+	Subnet         = domain.Subnet
 )
+
+// ConditionOf normalizes the state and last-seen time ThousandEyes gives for
+// an agent, re-exported so adapters need not import the domain.
+func ConditionOf(state, lastSeen string) AgentCondition {
+	return domain.ConditionOf(state, lastSeen)
+}
 
 // Agent kinds, re-exported so adapters need not import the domain.
 const (
